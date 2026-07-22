@@ -239,20 +239,25 @@
       clearTimeout(playTimeout);
       playTimeout = null;
     }
-    if (currentAudio) {
-      try {
-        currentAudio.pause();
-        currentAudio.src = '';
-        currentAudio.load();
-      } catch (e) {}
-      currentAudio = null;
-    }
-    if (currentPlayBtn) {
-      currentPlayBtn.classList.remove('is-playing');
-      currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
-      currentPlayBtn = null;
-    }
+    var audio = currentAudio;
+    var btn = currentPlayBtn;
+    // 先清空状态引用：清理 audio.src 时可能触发 'error' 事件，
+    // 必须在此之前置空，使 playSongSnippet 内的 guard
+    // (currentSongId !== song.id) 能拦截到销毁产生的 error，避免误触发回退音乐
+    currentAudio = null;
+    currentPlayBtn = null;
     currentSongId = null;
+    if (btn) {
+      btn.classList.remove('is-playing');
+      btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+    }
+    if (audio) {
+      try {
+        audio.pause();
+        audio.src = '';
+        audio.load();
+      } catch (e) {}
+    }
   }
 
   // 搜索 iTunes 获取预览 URL
@@ -503,6 +508,8 @@
             currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
           }
         }).catch(function (playErr) {
+          // 已停止或切换时（如 play() 因中断以 AbortError reject），不回退
+          if (currentSongId !== song.id) return;
           // iOS 自动播放策略阻止：回退到生成式音乐
           stopPlay();
           playGeneratedSnippet(song, playBtn);
@@ -522,6 +529,8 @@
       });
 
       audio.addEventListener('error', function () {
+        // 已停止或切换到其他歌曲时，忽略销毁 src 触发的 error 事件
+        if (currentSongId !== song.id) return;
         // 音频加载失败：回退到生成式音乐
         stopPlay();
         playGeneratedSnippet(song, playBtn);
@@ -531,6 +540,8 @@
       currentAudio = audio;
 
     }).catch(function () {
+      // 已停止或切换时，不再回退
+      if (currentSongId !== song.id) return;
       // 获取失败，回退到生成式旋律
       stopPlay();
       playGeneratedSnippet(song, playBtn);
@@ -699,12 +710,15 @@
   }
 
   // 切换播放/暂停
+  // 基于按钮的视觉状态判断，避免异步加载导致的状态混乱
   function togglePlay(song, playBtn) {
-    if (currentSongId === song.id && currentPlayBtn === playBtn) {
+    // 正在播放这首歌 → 停止
+    if (playBtn.classList.contains('is-playing')) {
       stopPlay();
-    } else {
-      playSongSnippet(song, playBtn);
+      return;
     }
+    // 否则播放（stopPlay 已在 playSongSnippet 内部调用，会清掉其他歌的播放）
+    playSongSnippet(song, playBtn);
   }
 
   /* ============================================================
