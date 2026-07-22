@@ -682,7 +682,7 @@ body::before {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 .bracket-head-text { flex: 1; min-width: 160px; }
@@ -700,11 +700,54 @@ body::before {
   margin: 0;
 }
 
-.bracket-controls {
+.bracket-head-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 规模切换器 */
+.size-toggle {
+  display: inline-flex;
+  background: rgba(212, 175, 55, 0.06);
+  border: 1px solid rgba(212, 175, 55, 0.28);
+  border-radius: 100px;
+  padding: 3px;
+  gap: 2px;
+}
+.size-btn {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  letter-spacing: 0.04em;
+}
+.size-btn:hover {
+  color: var(--text-primary);
+}
+.size-btn.is-active {
+  background: var(--accent-gold);
+  color: #1A0E0E;
+  box-shadow: 0 2px 8px rgba(212, 175, 55, 0.3);
+}
+
+/* 工具条 */
+.bracket-toolbar {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  margin-bottom: 12px;
 }
+
 .bracket-ctrl-btn {
   min-width: 40px;
   min-height: 36px;
@@ -722,6 +765,16 @@ body::before {
 }
 .bracket-ctrl-btn:hover { background: rgba(212, 175, 55, 0.16); border-color: var(--accent-gold); }
 .bracket-ctrl-btn:active { transform: scale(0.96); }
+.bracket-ctrl-btn--reset {
+  border-color: rgba(255, 100, 100, 0.35);
+  color: #ff8a8a;
+  background: rgba(255, 80, 80, 0.08);
+}
+.bracket-ctrl-btn--reset:hover {
+  background: rgba(255, 80, 80, 0.18);
+  border-color: #ff6b6b;
+  color: #ffaaaa;
+}
 
 .bracket-viewport {
   position: relative;

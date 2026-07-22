@@ -16,28 +16,58 @@
   'use strict';
 
   /* ---------- 常量 ---------- */
-  var ROUND_LABELS = ['', 'R1 · 128→64', 'R2 · 64→32', 'R3 · 32→16',
-                      'R4 · 16→8', 'R5 · 8→4', 'R6 · 4→2', 'R7 · 决赛'];
-  var MATCHES_PER_ROUND = [0, 64, 32, 16, 8, 4, 2, 1];
-  var CUM = [0, 0, 0, 0, 0, 0, 0, 0];
-  for (var r = 1; r <= 7; r++) { CUM[r] = CUM[r - 1] + MATCHES_PER_ROUND[r - 1]; }
+  var ROUND_LABELS_128 = ['', 'R1 · 128→64', 'R2 · 64→32', 'R3 · 32→16',
+                          'R4 · 16→8', 'R5 · 8→4', 'R6 · 4→2', 'R7 · 决赛'];
+  var ROUND_LABELS_64 = ['', 'R1 · 64→32', 'R2 · 32→16', 'R3 · 16→8',
+                         'R4 · 8→4', 'R5 · 4→2', 'R6 · 决赛'];
 
-  // 布局常量（逻辑像素）
   var NODE_W = 190;
   var NODE_H = 32;
   var COL_GAP = 44;
-  var COL_WIDTH = NODE_W + COL_GAP;        // 234
-  var TOP_PAD = 52;                         // 列标题预留高度
-  var SLOT_H_R1 = 38;                       // Round 1 每槽位高度
-  var TOTAL_H = 128 * SLOT_H_R1;            // 4864，Round 1 撑满
-  var CHAMPION_COL_X = 7 * COL_WIDTH;       // 冠军列 x
+  var COL_WIDTH = NODE_W + COL_GAP;
+  var TOP_PAD = 52;
+  var SLOT_H_R1 = 38;
+  var MIN_SCALE = 0.12;
+  var MAX_SCALE = 2.0;
+
+  var currentSize = 128;
+  var totalRounds = 7;
+  var TOTAL_H = 128 * SLOT_H_R1;
+  var CHAMPION_COL_X = 7 * COL_WIDTH;
   var CHAMPION_W = NODE_W + 28;
   var WORLD_W = CHAMPION_COL_X + CHAMPION_W + 30;
   var WORLD_H = TOTAL_H + TOP_PAD + 40;
 
-  // 缩放范围
-  var MIN_SCALE = 0.12;
-  var MAX_SCALE = 2.0;
+  function setSize(size) {
+    currentSize = size || 128;
+    totalRounds = Math.log2(currentSize);
+    TOTAL_H = currentSize * SLOT_H_R1;
+    CHAMPION_COL_X = totalRounds * COL_WIDTH;
+    CHAMPION_W = NODE_W + 28;
+    WORLD_W = CHAMPION_COL_X + CHAMPION_W + 30;
+    WORLD_H = TOTAL_H + TOP_PAD + 40;
+  }
+
+  function getRoundLabels() {
+    return currentSize === 64 ? ROUND_LABELS_64 : ROUND_LABELS_128;
+  }
+
+  function getMatchesPerRound() {
+    var arr = [0];
+    for (var r = 1; r <= totalRounds; r++) {
+      arr.push(currentSize / Math.pow(2, r));
+    }
+    return arr;
+  }
+
+  function buildCum() {
+    var mpr = getMatchesPerRound();
+    var cum = [];
+    for (var r = 0; r < mpr.length; r++) {
+      cum[r] = r === 0 ? 0 : cum[r - 1] + mpr[r - 1];
+    }
+    return cum;
+  }
 
   /* ---------- 视图状态 ---------- */
   var viewport = null;
@@ -110,29 +140,28 @@
   /* ============================================================
    * 主渲染入口
    * ============================================================ */
-  function render(bracket, champion, currentRound) {
+  function render(bracket, champion, currentRound, size) {
     var container = document.getElementById('bracket-container');
     viewport = document.getElementById('bracket-viewport');
     world = container;
     if (!world || !viewport) return;
 
+    var sz = size || (window.TS_App && window.TS_App.getSize ? window.TS_App.getSize() : 128);
+    setSize(sz);
+
     lastCurrentRound = currentRound || 1;
     hasChampion = !!champion;
 
-    // 1. 构建节点
     var nodes = buildNodes(bracket, champion);
 
-    // 2. 渲染 DOM
     renderWorld(nodes, champion, currentRound);
 
-    // 3. 绑定交互（只绑一次）
     if (!interactionBound) {
       bindInteraction();
       bindControls();
       interactionBound = true;
     }
 
-    // 4. 默认视图
     if (hasChampion) {
       focusChampion();
     } else {
@@ -144,45 +173,39 @@
    * 构建所有节点
    * ============================================================ */
   function buildNodes(bracket, champion) {
-    // 首轮配对：按 popularityScore 降序 seed 法
-    var sorted = window.TS_SONGS.slice().sort(function (a, b) {
-      return b.popularityScore - a.popularityScore;
-    });
+    var selected = getSelectedSongs();
     var r1Pairs = [];
-    for (var i = 0; i < 64; i++) {
-      r1Pairs.push([sorted[i], sorted[127 - i]]);
+    for (var i = 0; i < selected.length; i += 2) {
+      r1Pairs.push([selected[i], selected[i + 1]]);
     }
 
-    // matchNo → record 索引
     var recordMap = {};
     bracket.forEach(function (m) { recordMap[m.matchNo] = m; });
 
+    var cum = buildCum();
     var nodes = [];
 
-    for (var round = 1; round <= 7; round++) {
-      var count = Math.pow(2, 8 - round); // R1=128, R2=64...R7=2
+    for (var round = 1; round <= totalRounds; round++) {
+      var count = currentSize / Math.pow(2, round - 1);
       var slotH = TOTAL_H / count;
 
       for (var s = 0; s < count; s++) {
         var matchIdx = Math.floor(s / 2);
-        var mNo = CUM[round] + matchIdx + 1;
+        var mNo = cum[round] + matchIdx + 1;
         var rec = recordMap[mNo];
 
-        // 推导该位置的歌曲
         var song = null;
         if (round === 1) {
-          song = r1Pairs[matchIdx][s % 2];
+          song = r1Pairs[matchIdx] ? r1Pairs[matchIdx][s % 2] : null;
         } else {
-          // 上一轮第 (2*matchIdx + s%2) 场的胜者
           var prevIdx = 2 * matchIdx + (s % 2);
-          var prevMNo = CUM[round - 1] + prevIdx + 1;
+          var prevMNo = cum[round - 1] + prevIdx + 1;
           var prevRec = recordMap[prevMNo];
           if (prevRec && prevRec.completed) {
             song = findSong(prevRec.winnerId);
           }
         }
 
-        // 状态判定
         var status;
         if (rec && rec.completed) {
           status = (song && rec.winnerId === song.id) ? 'winner' : 'loser';
@@ -203,16 +226,32 @@
       }
     }
 
-    // 冠军节点
     if (champion) {
       nodes.push({
-        round: 8, slot: 0, matchNo: 127,
+        round: totalRounds + 1, slot: 0,
+        matchNo: cum[totalRounds] + 1,
         song: champion, status: 'champion', record: null,
         x: CHAMPION_COL_X, y: TOP_PAD + TOTAL_H / 2 - 22
       });
     }
 
     return nodes;
+  }
+
+  function getSelectedSongs() {
+    var appState = window.TS_App && window.TS_App.State;
+    if (appState && appState.selectedSongIds && appState.selectedSongIds.length > 0) {
+      var result = [];
+      for (var i = 0; i < appState.selectedSongIds.length; i++) {
+        var s = findSong(appState.selectedSongIds[i]);
+        if (s) result.push(s);
+      }
+      return result;
+    }
+    var sorted = window.TS_SONGS.slice().sort(function (a, b) {
+      return b.popularityScore - a.popularityScore;
+    });
+    return sorted.slice(0, currentSize);
   }
 
   /* ============================================================
@@ -226,11 +265,11 @@
     html += renderLinks(nodes, champion);
     html += '</svg>';
 
-    // 列标题
-    for (var r = 1; r <= 7; r++) {
+    var roundLabels = getRoundLabels();
+    for (var r = 1; r <= totalRounds; r++) {
       var cx = (r - 1) * COL_WIDTH;
       html += '<div class="bracket-col-label" style="left:' + cx + 'px;width:' + NODE_W + 'px;top:8px;">' +
-              ROUND_LABELS[r] + '</div>';
+              roundLabels[r] + '</div>';
     }
     if (champion) {
       html += '<div class="bracket-col-label" style="left:' + CHAMPION_COL_X + 'px;width:' + CHAMPION_W + 'px;top:8px;">Champion</div>';
@@ -248,7 +287,6 @@
 
   /* ---------- 渲染连接线 ---------- */
   function renderLinks(nodes, champion) {
-    // 按 round+slot 索引
     var byRound = {};
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
@@ -258,9 +296,8 @@
 
     var paths = '';
 
-    // Round 1-6 → Round 2-7
-    for (var r = 1; r <= 6; r++) {
-      var count = Math.pow(2, 8 - r);
+    for (var r = 1; r <= totalRounds - 1; r++) {
+      var count = currentSize / Math.pow(2, r - 1);
       for (var s = 0; s < count; s++) {
         var parent = byRound[r][s];
         var child = byRound[r + 1][Math.floor(s / 2)];
@@ -269,13 +306,12 @@
       }
     }
 
-    // Round 7 → 冠军
-    if (champion && byRound[8] && byRound[8][0]) {
-      var champ = byRound[8][0];
+    if (champion && byRound[totalRounds + 1] && byRound[totalRounds + 1][0]) {
+      var champ = byRound[totalRounds + 1][0];
       for (var k = 0; k < 2; k++) {
-        var p = byRound[7][k];
+        var p = byRound[totalRounds][k];
         if (!p) continue;
-        paths += linkPath(p, champ, 44); // 冠军节点更高
+        paths += linkPath(p, champ, 44);
       }
     }
 

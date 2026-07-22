@@ -19,14 +19,42 @@
 (function () {
   'use strict';
 
-  /* ---------- 常量 ---------- */
-  // 每轮场次数：index = round（1-7）。Round1=64, Round2=32...Round7=1
-  var MATCHES_PER_ROUND = [0, 64, 32, 16, 8, 4, 2, 1];
-  // 累计场次（用于全局编号）：CUM[round] = 之前轮次总场次
-  var CUM = [0, 0, 0, 0, 0, 0, 0, 0];
-  for (var r = 1; r <= 7; r++) { CUM[r] = CUM[r - 1] + MATCHES_PER_ROUND[r - 1]; }
-  var TOTAL_MATCHES = 127; // 64+32+16+8+4+2+1
-  var STORAGE_KEY = 'ts_tournament_v2';
+  /* ---------- 比赛配置 ---------- */
+  var TOURNAMENT_CONFIG = {
+    size: 128, // 128 或 64
+    storageKey: 'ts_tournament_v3',
+    cacheKey: 'ts_preview_cache_v3'
+  };
+
+  /* ---------- 常量（动态计算） ---------- */
+  function getTotalMatches(size) {
+    var s = size || TOURNAMENT_CONFIG.size;
+    return s - 1; // 128→127, 64→63
+  }
+  function getMatchesPerRound(size) {
+    var s = size || TOURNAMENT_CONFIG.size;
+    var rounds = Math.log2(s);
+    var arr = [0];
+    for (var r = 1; r <= rounds; r++) {
+      arr.push(s / Math.pow(2, r));
+    }
+    return arr;
+  }
+  function getTotalRounds(size) {
+    return Math.log2(size || TOURNAMENT_CONFIG.size);
+  }
+  function buildCum(size) {
+    var mpr = getMatchesPerRound(size);
+    var cum = [];
+    for (var r = 0; r < mpr.length; r++) {
+      cum[r] = r === 0 ? 0 : cum[r - 1] + mpr[r - 1];
+    }
+    return cum;
+  }
+
+  var TOTAL_MATCHES = getTotalMatches();
+  var STORAGE_KEY = TOURNAMENT_CONFIG.storageKey;
+  var CACHE_KEY = TOURNAMENT_CONFIG.cacheKey;
 
   /* ---------- 全局状态 ---------- */
   var State = {
@@ -72,12 +100,16 @@
     var s = sec % 60;
     return m + ':' + (s < 10 ? '0' + s : s);
   }
-  // 全局场次编号（1-127）
+  // 全局场次编号（1 起算）
   function matchNo(round, matchIdx) {
-    return CUM[round] + matchIdx + 1;
+    var cum = buildCum();
+    return cum[round] + matchIdx + 1;
   }
   // 当前轮总场次
-  function roundTotal(round) { return MATCHES_PER_ROUND[round]; }
+  function roundTotal(round) {
+    var mpr = getMatchesPerRound();
+    return mpr[round] || 0;
+  }
   // 已完成总场次
   function completedTotal() { return State.bracket.length; }
 
@@ -97,13 +129,17 @@
     return a;
   }
 
+  // 从全部歌曲中随机选取指定数量
+  function pickRandomSongs(count) {
+    return shuffle(window.TS_SONGS.slice()).slice(0, count);
+  }
+
   // 首轮：随机洗牌后两两配对
   function initFirstRound() {
-    var songs = shuffle(window.TS_SONGS.slice());
-    // 赋 seed（1-128）保留用于排序
+    var songs = pickRandomSongs(TOURNAMENT_CONFIG.size);
+    State.selectedSongIds = songs.map(function (s) { return s.id; });
     State.seeds = {};
     songs.forEach(function (s, i) { State.seeds[s.id] = i + 1; });
-    // 两两配对
     State.pairings = makePairs(songs);
     State.currentRound = 1;
     State.currentMatch = 0;
@@ -170,14 +206,24 @@
   var currentSongId = null;
   var playTimeout = null;
   var previewCache = {}; // 内存缓存：songId -> previewUrl
-  var CACHE_KEY = 'ts_preview_cache_v2';
+  var CACHE_KEY = TOURNAMENT_CONFIG.cacheKey;
 
-  // 从 localStorage 加载缓存
+  // 从 localStorage 加载缓存 + 合并预置缓存
   function loadPreviewCache() {
     try {
       var raw = localStorage.getItem(CACHE_KEY);
       if (raw) previewCache = JSON.parse(raw);
     } catch (e) {}
+    // 合并预置缓存（优先使用 localStorage 中已有的，预置的作为补充）
+    if (window.TS_PRESET_PREVIEWS) {
+      for (var id in window.TS_PRESET_PREVIEWS) {
+        if (window.TS_PRESET_PREVIEWS.hasOwnProperty(id)) {
+          if (!previewCache[id]) {
+            previewCache[id] = window.TS_PRESET_PREVIEWS[id];
+          }
+        }
+      }
+    }
   }
 
   // 保存缓存到 localStorage
@@ -425,7 +471,8 @@
     });
   }
 
-  // 回退：Web Audio 生成式旋律（当 iTunes 不可用时）
+  // 回退：Web Audio 生成式音乐片段（当 iTunes 不可用时）
+  // 使用和弦进行 + 主旋律，听起来更像真实音乐而非蜂鸣声
   function playGeneratedSnippet(song, playBtn) {
     stopPlay();
     currentSongId = song.id;
@@ -441,32 +488,113 @@
       return;
     }
 
-    var duration = 3;
-    var baseFreq = 220 + (song.popularityScore / 100) * 220;
+    var duration = AUDIO_CONFIG.duration || 8;
+    var bpm = 100 + (song.popularityScore % 40);
+    var beatTime = 60 / bpm;
+
+    // 基于歌曲 ID 选择调式（C, G, D, A, F 大调）
+    var keyIndex = song.id % 5;
+    var rootFreqs = [261.63, 196.00, 293.66, 220.00, 174.61]; // C4, G3, D4, A3, F3
+    var root = rootFreqs[keyIndex];
 
     var masterGain = ctx.createGain();
     masterGain.gain.setValueAtTime(0, ctx.currentTime);
-    masterGain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 0.05);
-    masterGain.gain.setValueAtTime(0.4, ctx.currentTime + duration - 0.15);
+    masterGain.gain.linearRampToValueAtTime(0.35, ctx.currentTime + 0.08);
+    masterGain.gain.setValueAtTime(0.35, ctx.currentTime + duration - 0.25);
     masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
     masterGain.connect(ctx.destination);
 
-    // 简单的旋律
-    var intervals = [0, 4, 7, 12, 7, 4, 0, -5];
-    for (var i = 0; i < intervals.length; i++) {
-      var osc = ctx.createOscillator();
-      var g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = baseFreq * Math.pow(2, intervals[i] / 12);
-      var t = ctx.currentTime + i * 0.35;
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.15, t + 0.03);
-      g.gain.setValueAtTime(0.15, t + 0.25);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
-      osc.connect(g);
-      g.connect(masterGain);
-      osc.start(t);
-      osc.stop(t + 0.36);
+    // 低通滤波器让音色更柔和
+    var filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 2000;
+    filter.Q.value = 0.5;
+    filter.connect(masterGain);
+
+    // I-V-vi-IV 经典和弦进行
+    var chordDegrees = [0, 4, 5, 3]; // I, V, vi, IV 相对大调
+    var majorScale = [0, 2, 4, 5, 7, 9, 11]; // 全全半全全全半
+
+    function getNoteFreq(degree, octaveShift) {
+      var semitones = majorScale[((degree % 7) + 7) % 7];
+      var octaves = Math.floor(degree / 7) + (octaveShift || 0);
+      return root * Math.pow(2, semitones / 12 + octaves);
+    }
+
+    // 每和弦持续 2 拍
+    var chordsPerLoop = 4;
+    var chordDuration = beatTime * 2;
+    var totalChords = Math.ceil(duration / chordDuration);
+
+    for (var c = 0; c < totalChords; c++) {
+      var chordRoot = chordDegrees[c % chordsPerLoop];
+      var startTime = ctx.currentTime + c * chordDuration;
+
+      // 三和弦音符（根、三、五）
+      var chordNotes = [
+        getNoteFreq(chordRoot, 0),
+        getNoteFreq(chordRoot + 2, 0),
+        getNoteFreq(chordRoot + 4, 0)
+      ];
+
+      // 低音（根音低八度）
+      var bass = ctx.createOscillator();
+      var bassGain = ctx.createGain();
+      bass.type = 'sine';
+      bass.frequency.value = getNoteFreq(chordRoot, -1);
+      bassGain.gain.setValueAtTime(0, startTime);
+      bassGain.gain.linearRampToValueAtTime(0.18, startTime + 0.02);
+      bassGain.gain.setValueAtTime(0.15, startTime + chordDuration * 0.7);
+      bassGain.gain.exponentialRampToValueAtTime(0.001, startTime + chordDuration);
+      bass.connect(bassGain);
+      bassGain.connect(filter);
+      bass.start(startTime);
+      bass.stop(startTime + chordDuration + 0.05);
+
+      // 和弦铺底（三角波，柔和）
+      for (var n = 0; n < chordNotes.length; n++) {
+        var osc = ctx.createOscillator();
+        var g = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = chordNotes[n];
+        g.gain.setValueAtTime(0, startTime);
+        g.gain.linearRampToValueAtTime(0.07, startTime + 0.04);
+        g.gain.setValueAtTime(0.06, startTime + chordDuration * 0.8);
+        g.gain.exponentialRampToValueAtTime(0.001, startTime + chordDuration);
+        osc.connect(g);
+        g.connect(filter);
+        osc.start(startTime);
+        osc.stop(startTime + chordDuration + 0.05);
+      }
+    }
+
+    // 主旋律（基于 popularityScore 生成不同旋律）
+    var melodyNotes = [0, 2, 4, 5, 7, 9, 11, 12, 11, 9, 7, 5, 4, 2, 0, -2];
+    var noteDuration = beatTime * 0.5;
+    var melodyStart = ctx.currentTime + 0.5;
+    var totalMelodyNotes = Math.floor((duration - 0.5) / noteDuration);
+
+    for (var m = 0; m < totalMelodyNotes; m++) {
+      var idx = (m + song.popularityScore + song.id) % melodyNotes.length;
+      var degree = melodyNotes[idx];
+      var mFreq = getNoteFreq(degree, 1);
+      var mTime = melodyStart + m * noteDuration;
+
+      // 休息符（每第 4 个音的概率休息）
+      if ((m + song.id) % 7 === 0) continue;
+
+      var mOsc = ctx.createOscillator();
+      var mGain = ctx.createGain();
+      mOsc.type = 'sine';
+      mOsc.frequency.value = mFreq;
+      mGain.gain.setValueAtTime(0, mTime);
+      mGain.gain.linearRampToValueAtTime(0.12, mTime + 0.02);
+      mGain.gain.setValueAtTime(0.1, mTime + noteDuration * 0.6);
+      mGain.gain.exponentialRampToValueAtTime(0.001, mTime + noteDuration * 0.9);
+      mOsc.connect(mGain);
+      mGain.connect(masterGain);
+      mOsc.start(mTime);
+      mOsc.stop(mTime + noteDuration);
     }
 
     playTimeout = setTimeout(function () {
@@ -662,9 +790,8 @@
     }
     // 当前轮完成
     var nextRound = State.currentRound + 1;
-    // 决赛完成（第 7 轮）→ 冠军
-    if (nextRound > 7) {
-      // 最后一场的胜者即冠军
+    var totalRounds = getTotalRounds();
+    if (nextRound > totalRounds) {
       var lastMatch = State.bracket[State.bracket.length - 1];
       State.champion = findSong(lastMatch.winnerId);
       saveState();
@@ -681,10 +808,10 @@
   function showRoundTransition(doneRound, nextRound) {
     saveState();
     switchView('transition');
-    var advanceCount = MATCHES_PER_ROUND[nextRound];
+    var mpr = getMatchesPerRound();
+    var advanceCount = mpr[nextRound] || 0;
     els.transitionTitle.textContent = 'Round ' + doneRound + ' Complete';
     els.transitionDesc.textContent = advanceCount * 2 + ' 首歌曲已淘汰，' + advanceCount + ' 首晋级，进入 Round ' + nextRound;
-    // 同步更新进度条（当前轮已 100%）
     updateProgress();
   }
 
@@ -768,12 +895,58 @@
     State.bracket = [];
     State.champion = null;
     State.seeds = {};
+    State.selectedSongIds = [];
     initFirstRound();
     saveState();
     switchView('battle');
     renderCurrentMatch();
     if (window.BracketView && window.BracketView.render) {
-      window.BracketView.render(State.bracket, State.champion, State.currentRound);
+      window.BracketView.render(State.bracket, State.champion, State.currentRound, TOURNAMENT_CONFIG.size);
+    }
+    updateSizeLabel();
+  }
+
+  /* ---------- 切换比赛规模（64 / 128 首） ---------- */
+  function setSize(size) {
+    if (size !== 64 && size !== 128) return;
+    if (size === TOURNAMENT_CONFIG.size && State.bracket.length > 0) {
+      return;
+    }
+    stopPlay();
+    localStorage.removeItem(STORAGE_KEY);
+    TOURNAMENT_CONFIG.size = size;
+    TOTAL_MATCHES = getTotalMatches();
+    State.bracket = [];
+    State.champion = null;
+    State.seeds = {};
+    State.selectedSongIds = [];
+    initFirstRound();
+    saveState();
+    switchView('battle');
+    renderCurrentMatch();
+    if (window.BracketView && window.BracketView.render) {
+      window.BracketView.render(State.bracket, State.champion, State.currentRound, TOURNAMENT_CONFIG.size);
+    }
+    updateSizeLabel();
+  }
+
+  function updateSizeLabel() {
+    var sizeLabels = document.querySelectorAll('[data-size-label]');
+    sizeLabels.forEach(function (el) {
+      el.textContent = TOURNAMENT_CONFIG.size + ' 首';
+    });
+    var sizeBtns = document.querySelectorAll('[data-size-btn]');
+    sizeBtns.forEach(function (btn) {
+      var s = parseInt(btn.dataset.sizeBtn, 10);
+      btn.classList.toggle('is-active', s === TOURNAMENT_CONFIG.size);
+    });
+    var bracketSub = document.querySelector('.bracket-sub');
+    if (bracketSub) {
+      bracketSub.textContent = '共 ' + TOTAL_MATCHES + ' 场 · ' + getTotalRounds() + ' 轮 · 双指缩放拖拽';
+    }
+    var metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc) {
+      metaDesc.setAttribute('content', 'Taylor Swift 歌曲对战锦标赛 — ' + TOURNAMENT_CONFIG.size + ' 首歌曲角逐冠军');
     }
   }
 
@@ -805,9 +978,9 @@
     els.navBattle.classList.toggle('nav-btn--active', !isBracket);
     els.navBracket.classList.toggle('nav-btn--active', isBracket);
 
-    // 切到对战表时刷新
+    // 切到对战树时刷新
     if (view === 'bracket-view' && window.BracketView && window.BracketView.render) {
-      window.BracketView.render(State.bracket, State.champion, State.currentRound);
+      window.BracketView.render(State.bracket, State.champion, State.currentRound, TOURNAMENT_CONFIG.size);
     }
   }
 
@@ -827,7 +1000,6 @@
           completed: m.completed
         };
       });
-      // 保存当前轮 pairings（随机配对需要持久化顺序）
       var slimPairings = State.pairings.map(function (p) {
         return [p[0] ? p[0].id : null, p[1] ? p[1].id : null];
       });
@@ -837,11 +1009,13 @@
         bracket: slimBracket,
         pairings: slimPairings,
         championId: State.champion ? State.champion.id : null,
-        seeds: State.seeds
+        seeds: State.seeds,
+        selectedSongIds: State.selectedSongIds || [],
+        tournamentSize: TOURNAMENT_CONFIG.size
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
-      // localStorage 满或不可用，静默失败
+      // 静默失败
     }
   }
 
@@ -852,12 +1026,16 @@
       var data = JSON.parse(raw);
       if (!data || !data.seeds) return false;
 
+      if (data.tournamentSize) {
+        TOURNAMENT_CONFIG.size = data.tournamentSize;
+        TOTAL_MATCHES = getTotalMatches();
+      }
+      State.selectedSongIds = data.selectedSongIds || [];
       State.seeds = data.seeds;
       State.currentRound = data.currentRound;
       State.currentMatch = data.currentMatch;
       State.champion = data.championId ? findSong(data.championId) : null;
 
-      // 重建 bracket
       State.bracket = (data.bracket || []).map(function (m) {
         return {
           round: m.round,
@@ -870,7 +1048,6 @@
         };
       });
 
-      // 重建 pairings
       if (data.pairings && data.pairings.length > 0) {
         State.pairings = data.pairings.map(function (p) {
           return [p[0] ? findSong(p[0]) : null, p[1] ? findSong(p[1]) : null];
@@ -879,7 +1056,6 @@
         State.pairings = [];
       }
 
-      // 如果没有 pairings 且还没开始，初始化
       if (State.pairings.length === 0 && !State.champion && State.bracket.length === 0) {
         initFirstRound();
         saveState();
@@ -1065,36 +1241,48 @@
   function init() {
     cacheEls();
 
-    // 加载预览缓存
     loadPreviewCache();
 
-    // 数据校验
     if (!window.TS_SONGS || window.TS_SONGS.length !== 128) {
       console.error('歌曲数据异常：', window.TS_SONGS ? window.TS_SONGS.length : '未加载');
     }
 
-    // 尝试恢复进度
     var restored = loadState();
     if (!restored) {
       initFirstRound();
       saveState();
     }
 
-    // 事件：继续按钮
     document.getElementById('btn-continue-round').addEventListener('click', continueToNextRound);
-    // 冠军页按钮
     document.getElementById('btn-view-bracket').addEventListener('click', function () {
       switchView('bracket-view');
     });
     document.getElementById('btn-restart-champion').addEventListener('click', restart);
-    // 导航
     els.navBattle.addEventListener('click', function () { switchView('battle'); });
     els.navBracket.addEventListener('click', function () { switchView('bracket-view'); });
 
-    // 背景粒子
+    var btnReset = document.getElementById('btn-reset');
+    if (btnReset) btnReset.addEventListener('click', function () {
+      if (confirm('确定要重置所有选择，重新开始吗？')) {
+        restart();
+      }
+    });
+
+    var sizeBtns = document.querySelectorAll('[data-size-btn]');
+    sizeBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var size = parseInt(btn.dataset.sizeBtn, 10);
+        if (size === TOURNAMENT_CONFIG.size) return;
+        var msg = '切换到 ' + size + ' 首精简版？当前进度将被清空。';
+        if (State.bracket.length > 0) {
+          if (!confirm(msg)) return;
+        }
+        setSize(size);
+      });
+    });
+
     initBgParticles();
 
-    // 渲染
     if (State.champion) {
       showChampion();
     } else {
@@ -1102,8 +1290,15 @@
       renderCurrentMatch();
     }
 
-    // 暴露给外部调试
-    window.TS_App = { State: State, restart: restart, switchView: switchView };
+    updateSizeLabel();
+
+    window.TS_App = {
+      State: State,
+      restart: restart,
+      switchView: switchView,
+      setSize: setSize,
+      getSize: function () { return TOURNAMENT_CONFIG.size; }
+    };
   }
 
   // DOM 就绪后启动

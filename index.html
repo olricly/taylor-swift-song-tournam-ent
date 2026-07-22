@@ -110,12 +110,19 @@
           <h2 class="bracket-title">对战树</h2>
           <p class="bracket-sub">共 127 场 · 7 轮 · 双指缩放拖拽</p>
         </div>
-        <div class="bracket-controls">
-          <button class="bracket-ctrl-btn" id="btn-tree-fit" type="button" aria-label="重置视图">重置</button>
-          <button class="bracket-ctrl-btn" id="btn-tree-focus" type="button" aria-label="聚焦当前轮">聚焦当前</button>
-          <button class="bracket-ctrl-btn" id="btn-tree-zoom-in" type="button" aria-label="放大">+</button>
-          <button class="bracket-ctrl-btn" id="btn-tree-zoom-out" type="button" aria-label="缩小">−</button>
+        <div class="bracket-head-actions">
+          <div class="size-toggle" role="group" aria-label="比赛规模">
+            <button class="size-btn" type="button" data-size-btn="128">128 首</button>
+            <button class="size-btn" type="button" data-size-btn="64">64 首</button>
+          </div>
+          <button class="bracket-ctrl-btn bracket-ctrl-btn--reset" id="btn-reset" type="button" aria-label="重置">↻ 重置</button>
         </div>
+      </div>
+      <div class="bracket-toolbar">
+        <button class="bracket-ctrl-btn" id="btn-tree-fit" type="button" aria-label="重置视图">适应屏幕</button>
+        <button class="bracket-ctrl-btn" id="btn-tree-focus" type="button" aria-label="聚焦当前轮">聚焦当前</button>
+        <button class="bracket-ctrl-btn" id="btn-tree-zoom-in" type="button" aria-label="放大">+</button>
+        <button class="bracket-ctrl-btn" id="btn-tree-zoom-out" type="button" aria-label="缩小">−</button>
       </div>
       <div class="bracket-viewport" id="bracket-viewport">
         <div class="bracket-world" id="bracket-container">
@@ -146,6 +153,7 @@
 
   <!-- 脚本：先数据，后逻辑 -->
   <script src="scripts/songs-data.js"></script>
+  <script src="scripts/preset-previews.js"></script>
   <script src="scripts/bracket.js"></script>
   <script src="scripts/app.js"></script>
 </body>
