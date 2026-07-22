@@ -97,20 +97,36 @@
         <h2 class="champion-heading">最终冠军</h2>
         <div class="champion-card" id="champion-card"><!-- 由 app.js 注入 --></div>
         <div class="champion-actions">
-          <button class="btn btn--primary" id="btn-view-bracket" type="button">查看完整对战表</button>
+          <button class="btn btn--primary" id="btn-view-bracket" type="button">查看对战树</button>
           <button class="btn btn--ghost" id="btn-restart-champion" type="button">重新开始</button>
         </div>
       </div>
     </section>
 
-    <!-- 对战表（默认隐藏，可切换查看） -->
-    <section id="bracket-view" class="view view--bracket" aria-label="对战表" hidden>
+    <!-- 对战树（默认隐藏，可切换查看） -->
+    <section id="bracket-view" class="view view--bracket" aria-label="对战树" hidden>
       <div class="bracket-head">
-        <h2 class="bracket-title">完整对战表</h2>
-        <p class="bracket-sub">共 127 场 · 7 轮</p>
+        <div class="bracket-head-text">
+          <h2 class="bracket-title">对战树</h2>
+          <p class="bracket-sub">共 127 场 · 7 轮 · 双指缩放拖拽</p>
+        </div>
+        <div class="bracket-controls">
+          <button class="bracket-ctrl-btn" id="btn-tree-fit" type="button" aria-label="重置视图">重置</button>
+          <button class="bracket-ctrl-btn" id="btn-tree-focus" type="button" aria-label="聚焦当前轮">聚焦当前</button>
+          <button class="bracket-ctrl-btn" id="btn-tree-zoom-in" type="button" aria-label="放大">+</button>
+          <button class="bracket-ctrl-btn" id="btn-tree-zoom-out" type="button" aria-label="缩小">−</button>
+        </div>
       </div>
-      <div class="bracket-table-wrap" id="bracket-container">
-        <!-- 由 bracket.js 动态注入 -->
+      <div class="bracket-viewport" id="bracket-viewport">
+        <div class="bracket-world" id="bracket-container">
+          <!-- 由 bracket.js 动态注入 SVG 连接线 + DOM 节点 -->
+        </div>
+      </div>
+      <div class="bracket-legend" aria-hidden="true">
+        <span class="legend-item"><span class="legend-dot legend-win"></span>胜者晋级</span>
+        <span class="legend-item"><span class="legend-dot legend-lose"></span>已淘汰</span>
+        <span class="legend-item"><span class="legend-dot legend-pending"></span>待定</span>
+        <span class="legend-item"><span class="legend-dot legend-current"></span>当前轮</span>
       </div>
     </section>
 

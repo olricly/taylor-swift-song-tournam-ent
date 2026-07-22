@@ -1,12 +1,13 @@
 /* ============================================================
- * Taylor Swift 歌曲对战锦标赛 — 对战表渲染（bracket.js）
+ * Taylor Swift 歌曲对战锦标赛 — 对战树渲染（bracket.js）
  *
- * 渲染全部 127 场对局表格：
- *   - 每行：轮次 / 场次编号(M1-M127) / 歌曲A / 歌曲B / 用户选择 / 结果状态
- *   - 按轮次分组可折叠展开（默认当前轮展开，其余折叠）
- *   - 冠军行高亮（金色背景）置顶
- *   - 未进行场次显示"待定"
- *   - 手机端：表格横向滚动
+ * 渲染完整淘汰赛树（255 节点）：
+ *   - 7 列对应 Round 1-7，最右侧冠军节点
+ *   - SVG 贝塞尔曲线连接父子节点
+ *   - 胜者金色高亮、败者灰色删除线、待定虚线
+ *   - 当前轮节点脉冲提示
+ *   - 支持双指缩放、拖拽平移、滚轮缩放
+ *   - 控制按钮：重置视图、聚焦当前轮、放大、缩小
  *
  * 暴露：window.BracketView.render(bracket, champion, currentRound)
  * ============================================================ */
@@ -14,14 +15,42 @@
 (function () {
   'use strict';
 
-  var ROUND_LABELS = ['-', 'Round 1 · 128→64', 'Round 2 · 64→32', 'Round 3 · 32→16',
-                      'Round 4 · 16→8', 'Round 5 · 8→4', 'Round 6 · 4→2', 'Round 7 · 决赛'];
-
-  // 每轮场次数（与 app.js 保持一致）
+  /* ---------- 常量 ---------- */
+  var ROUND_LABELS = ['', 'R1 · 128→64', 'R2 · 64→32', 'R3 · 32→16',
+                      'R4 · 16→8', 'R5 · 8→4', 'R6 · 4→2', 'R7 · 决赛'];
   var MATCHES_PER_ROUND = [0, 64, 32, 16, 8, 4, 2, 1];
   var CUM = [0, 0, 0, 0, 0, 0, 0, 0];
   for (var r = 1; r <= 7; r++) { CUM[r] = CUM[r - 1] + MATCHES_PER_ROUND[r - 1]; }
 
+  // 布局常量（逻辑像素）
+  var NODE_W = 180;
+  var NODE_H = 26;
+  var COL_GAP = 40;
+  var COL_WIDTH = NODE_W + COL_GAP;        // 220
+  var TOP_PAD = 44;                         // 列标题预留高度
+  var SLOT_H_R1 = 32;                       // Round 1 每槽位高度
+  var TOTAL_H = 128 * SLOT_H_R1;            // 4096，Round 1 撑满
+  var CHAMPION_COL_X = 7 * COL_WIDTH;       // 冠军列 x
+  var CHAMPION_W = NODE_W + 24;
+  var WORLD_W = CHAMPION_COL_X + CHAMPION_W + 30;
+  var WORLD_H = TOTAL_H + TOP_PAD + 40;
+
+  // 缩放范围
+  var MIN_SCALE = 0.12;
+  var MAX_SCALE = 2.0;
+
+  /* ---------- 视图状态 ---------- */
+  var viewport = null;
+  var world = null;
+  var zoomLabel = null;
+  var view = { scale: 1, tx: 0, ty: 0 };
+  var drag = null;
+  var pinch = null;
+  var interactionBound = false;
+  var lastCurrentRound = 1;
+  var hasChampion = false;
+
+  /* ---------- 工具 ---------- */
   function escapeHtml(str) {
     if (str == null) return '';
     return String(str)
@@ -32,141 +61,463 @@
       .replace(/'/g, '&#39;');
   }
 
-  /**
+  // 缓存的 seed 表（按 popularityScore 降序排名）
+  var seedCache = null;
+  function getSeed(song) {
+    if (!seedCache) {
+      seedCache = {};
+      var sorted = window.TS_SONGS.slice().sort(function (a, b) {
+        return b.popularityScore - a.popularityScore;
+      });
+      sorted.forEach(function (s, i) { seedCache[s.id] = i + 1; });
+    }
+    return seedCache[song.id] || '—';
+  }
+
+  function findSong(id) {
+    for (var i = 0; i < window.TS_SONGS.length; i++) {
+      if (window.TS_SONGS[i].id === id) return window.TS_SONGS[i];
+    }
+    return null;
+  }
+
+  /* ============================================================
    * 主渲染入口
-   * @param {Array} bracket    - 全部对局记录
-   * @param {Object|null} champion - 冠军歌曲
-   * @param {number} currentRound - 当前轮（决定默认展开哪一轮）
-   */
+   * ============================================================ */
   function render(bracket, champion, currentRound) {
     var container = document.getElementById('bracket-container');
-    if (!container) return;
+    viewport = document.getElementById('bracket-viewport');
+    world = container;
+    if (!world || !viewport) return;
 
-    // 构建 matchNo → record 的快速索引
+    lastCurrentRound = currentRound || 1;
+    hasChampion = !!champion;
+
+    // 1. 构建节点
+    var nodes = buildNodes(bracket, champion);
+
+    // 2. 渲染 DOM
+    renderWorld(nodes, champion, currentRound);
+
+    // 3. 绑定交互（只绑一次）
+    if (!interactionBound) {
+      bindInteraction();
+      bindControls();
+      interactionBound = true;
+    }
+
+    // 4. 默认视图
+    if (hasChampion) {
+      focusChampion();
+    } else {
+      focusRound(currentRound);
+    }
+  }
+
+  /* ============================================================
+   * 构建所有节点
+   * ============================================================ */
+  function buildNodes(bracket, champion) {
+    // 首轮配对：按 popularityScore 降序 seed 法
+    var sorted = window.TS_SONGS.slice().sort(function (a, b) {
+      return b.popularityScore - a.popularityScore;
+    });
+    var r1Pairs = [];
+    for (var i = 0; i < 64; i++) {
+      r1Pairs.push([sorted[i], sorted[127 - i]]);
+    }
+
+    // matchNo → record 索引
     var recordMap = {};
     bracket.forEach(function (m) { recordMap[m.matchNo] = m; });
 
+    var nodes = [];
+
+    for (var round = 1; round <= 7; round++) {
+      var count = Math.pow(2, 8 - round); // R1=128, R2=64...R7=2
+      var slotH = TOTAL_H / count;
+
+      for (var s = 0; s < count; s++) {
+        var matchIdx = Math.floor(s / 2);
+        var mNo = CUM[round] + matchIdx + 1;
+        var rec = recordMap[mNo];
+
+        // 推导该位置的歌曲
+        var song = null;
+        if (round === 1) {
+          song = r1Pairs[matchIdx][s % 2];
+        } else {
+          // 上一轮第 (2*matchIdx + s%2) 场的胜者
+          var prevIdx = 2 * matchIdx + (s % 2);
+          var prevMNo = CUM[round - 1] + prevIdx + 1;
+          var prevRec = recordMap[prevMNo];
+          if (prevRec && prevRec.completed) {
+            song = findSong(prevRec.winnerId);
+          }
+        }
+
+        // 状态判定
+        var status;
+        if (rec && rec.completed) {
+          status = (song && rec.winnerId === song.id) ? 'winner' : 'loser';
+        } else if (song) {
+          status = 'pending';
+        } else {
+          status = 'empty';
+        }
+
+        var x = (round - 1) * COL_WIDTH;
+        var y = TOP_PAD + (s + 0.5) * slotH - NODE_H / 2;
+
+        nodes.push({
+          round: round, slot: s, matchNo: mNo,
+          song: song, status: status, record: rec,
+          x: x, y: y
+        });
+      }
+    }
+
+    // 冠军节点
+    if (champion) {
+      nodes.push({
+        round: 8, slot: 0, matchNo: 127,
+        song: champion, status: 'champion', record: null,
+        x: CHAMPION_COL_X, y: TOP_PAD + TOTAL_H / 2 - 22
+      });
+    }
+
+    return nodes;
+  }
+
+  /* ============================================================
+   * 渲染整个 world
+   * ============================================================ */
+  function renderWorld(nodes, champion, currentRound) {
     var html = '';
 
-    // 1. 冠军行置顶（如果有冠军）
+    // SVG 连接线层
+    html += '<svg class="bracket-svg" width="' + WORLD_W + '" height="' + WORLD_H + '">';
+    html += renderLinks(nodes, champion);
+    html += '</svg>';
+
+    // 列标题
+    for (var r = 1; r <= 7; r++) {
+      var cx = (r - 1) * COL_WIDTH;
+      html += '<div class="bracket-col-label" style="left:' + cx + 'px;width:' + NODE_W + 'px;top:8px;">' +
+              ROUND_LABELS[r] + '</div>';
+    }
     if (champion) {
-      html += renderChampionBanner(champion);
+      html += '<div class="bracket-col-label" style="left:' + CHAMPION_COL_X + 'px;width:' + CHAMPION_W + 'px;top:8px;">Champion</div>';
     }
 
-    // 2. 按轮次分组渲染（7 轮）
-    for (var round = 1; round <= 7; round++) {
-      var total = MATCHES_PER_ROUND[round];
-      var rows = '';
-      var completedInRound = 0;
+    // 节点
+    for (var i = 0; i < nodes.length; i++) {
+      html += renderNode(nodes[i], currentRound);
+    }
 
-      for (var m = 0; m < total; m++) {
-        var matchNo = CUM[round] + m + 1;
-        var rec = recordMap[matchNo];
-        if (rec && rec.completed) {
-          completedInRound++;
-          rows += renderMatchRow(rec, champion);
-        } else {
-          rows += renderPendingRow(matchNo, round);
-        }
+    world.innerHTML = html;
+    world.style.width = WORLD_W + 'px';
+    world.style.height = WORLD_H + 'px';
+  }
+
+  /* ---------- 渲染连接线 ---------- */
+  function renderLinks(nodes, champion) {
+    // 按 round+slot 索引
+    var byRound = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (!byRound[n.round]) byRound[n.round] = {};
+      byRound[n.round][n.slot] = n;
+    }
+
+    var paths = '';
+
+    // Round 1-6 → Round 2-7
+    for (var r = 1; r <= 6; r++) {
+      var count = Math.pow(2, 8 - r);
+      for (var s = 0; s < count; s++) {
+        var parent = byRound[r][s];
+        var child = byRound[r + 1][Math.floor(s / 2)];
+        if (!parent || !child) continue;
+        paths += linkPath(parent, child, NODE_H);
       }
-
-      // 当前轮默认展开，其余折叠（有冠军时全部展开方便查看完整结果）
-      var collapsed = champion ? false : (round !== currentRound);
-      html += renderRoundGroup(round, total, completedInRound, rows, collapsed);
     }
 
-    container.innerHTML = html;
-    bindToggle();
+    // Round 7 → 冠军
+    if (champion && byRound[8] && byRound[8][0]) {
+      var champ = byRound[8][0];
+      for (var k = 0; k < 2; k++) {
+        var p = byRound[7][k];
+        if (!p) continue;
+        paths += linkPath(p, champ, 44); // 冠军节点更高
+      }
+    }
+
+    return paths;
   }
 
-  // 冠军横幅（置顶高亮）
-  function renderChampionBanner(champion) {
-    return '' +
-      '<div class="bracket-champion-banner" style="margin-bottom:20px;padding:24px;border-radius:14px;' +
-      'background:linear-gradient(135deg, rgba(212,175,55,0.22), rgba(212,175,55,0.06));' +
-      'border:1px solid var(--accent-gold);box-shadow:0 0 40px rgba(212,175,55,0.25);text-align:center;">' +
-        '<div style="font-family:var(--font-mono);font-size:0.74rem;letter-spacing:0.28em;text-transform:uppercase;color:var(--accent-gold);margin-bottom:8px;">Champion</div>' +
-        '<div style="font-family:var(--font-display);font-style:italic;font-size:clamp(1.6rem,5vw,2.4rem);font-weight:600;color:var(--text-primary);">' +
-          escapeHtml(champion.title) +
-        '</div>' +
-        '<div style="color:var(--text-secondary);font-size:0.9rem;margin-top:4px;">' +
-          escapeHtml(champion.album) + ' · ' + champion.year +
-        '</div>' +
-      '</div>';
+  function linkPath(parent, child, childH) {
+    var x1 = parent.x + NODE_W;
+    var y1 = parent.y + NODE_H / 2;
+    var x2 = child.x;
+    var y2 = child.y + childH / 2;
+    var mx = (x1 + x2) / 2;
+
+    var cls = 'link';
+    if (parent.status === 'winner') cls += ' is-win';
+    else if (parent.status === 'loser') cls += ' is-lose';
+    else cls += ' is-pending';
+
+    return '<path class="' + cls + '" d="M ' + x1 + ' ' + y1 +
+           ' C ' + mx + ' ' + y1 + ', ' + mx + ' ' + y2 + ', ' + x2 + ' ' + y2 + '" />';
   }
 
-  // 单轮分组容器
-  function renderRoundGroup(round, total, completed, rowsHtml, collapsed) {
-    var cls = 'bracket-round' + (collapsed ? ' is-collapsed' : '');
-    return '' +
-      '<div class="' + cls + '" data-round="' + round + '">' +
-        '<button class="bracket-round-head" type="button" aria-expanded="' + !collapsed + '">' +
-          '<span class="bracket-round-title">' + ROUND_LABELS[round] + '</span>' +
-          '<span class="bracket-round-count">' + completed + ' / ' + total + ' 场</span>' +
-          '<span class="bracket-round-toggle">▾</span>' +
-        '</button>' +
-        '<div class="bracket-round-body">' +
-          '<table class="bracket-table">' +
-            '<thead><tr>' +
-              '<th>场次</th><th>歌曲 A</th><th>歌曲 B</th><th>胜者</th><th>状态</th>' +
-            '</tr></thead>' +
-            '<tbody>' + rowsHtml + '</tbody>' +
-          '</table>' +
-        '</div>' +
-      '</div>';
+  /* ---------- 渲染单个节点 ---------- */
+  function renderNode(n, currentRound) {
+    var cls = 'tree-node';
+    if (n.status === 'winner') cls += ' is-winner';
+    else if (n.status === 'loser') cls += ' is-loser';
+    else if (n.status === 'champion') cls += ' is-champion';
+    else cls += ' is-pending'; // pending 和 empty 都用 pending 样式
+
+    if (n.round === currentRound && n.status !== 'empty' && !hasChampion) {
+      cls += ' is-current';
+    }
+
+    var w = n.status === 'champion' ? CHAMPION_W : NODE_W;
+    var style = 'left:' + n.x + 'px;top:' + n.y + 'px;width:' + w + 'px;';
+
+    var inner = '';
+    if (n.song) {
+      var eraColor = n.song.coverColor;
+      inner = '<span class="node-era" style="background:' + eraColor + ';"></span>' +
+              '<span class="node-title">' + escapeHtml(n.song.title) + '</span>' +
+              '<span class="node-seed">#' + getSeed(n.song) + '</span>';
+    } else {
+      inner = '<span class="node-title">待定</span>';
+    }
+
+    return '<div class="' + cls + '" style="' + style + '">' + inner + '</div>';
   }
 
-  // 已完成场次行
-  function renderMatchRow(rec, champion) {
-    var a = rec.songA, b = rec.songB;
-    var aWin = rec.winnerId === a.id;
-    var bWin = rec.winnerId === b.id;
-
-    var isChampionMatch = (champion && rec.round === 7);
-    var rowCls = isChampionMatch ? 'bracket-champion-row' : '';
-
-    var statusText = isChampionMatch ? '冠军' : '已晋级 / 淘汰';
-    var statusCls = isChampionMatch ? 'status-advance' : 'status-advance';
-
-    return '' +
-      '<tr class="' + rowCls + '">' +
-        '<td class="col-match">M' + rec.matchNo + '</td>' +
-        '<td class="song-name ' + (aWin ? 'is-winner' : 'is-loser') + '">' + escapeHtml(a.title) +
-          '<div style="font-size:0.72rem;color:var(--text-dim);font-family:var(--font-mono);">' + escapeHtml(a.era) + '</div>' +
-        '</td>' +
-        '<td class="song-name ' + (bWin ? 'is-winner' : 'is-loser') + '">' + escapeHtml(b.title) +
-          '<div style="font-size:0.72rem;color:var(--text-dim);font-family:var(--font-mono);">' + escapeHtml(b.era) + '</div>' +
-        '</td>' +
-        '<td class="song-name is-winner">' + escapeHtml((aWin ? a : b).title) + '</td>' +
-        '<td class="' + statusCls + '">' + statusText + '</td>' +
-      '</tr>';
+  /* ============================================================
+   * 视图变换
+   * ============================================================ */
+  function applyTransform() {
+    if (!world) return;
+    world.style.transform = 'translate(' + view.tx + 'px, ' + view.ty + 'px) scale(' + view.scale + ')';
+    updateZoomLabel();
   }
 
-  // 待定场次行
-  function renderPendingRow(matchNo, round) {
-    return '' +
-      '<tr>' +
-        '<td class="col-match">M' + matchNo + '</td>' +
-        '<td class="song-name status-pending">待定</td>' +
-        '<td class="song-name status-pending">待定</td>' +
-        '<td class="song-name status-pending">—</td>' +
-        '<td class="status-pending">未进行</td>' +
-      '</tr>';
+  function updateZoomLabel() {
+    if (viewport) {
+      viewport.setAttribute('data-zoom-label', Math.round(view.scale * 100) + '%');
+    }
   }
 
-  // 绑定折叠/展开
-  function bindToggle() {
-    var heads = document.querySelectorAll('.bracket-round-head');
-    heads.forEach(function (head) {
-      head.addEventListener('click', function () {
-        var group = head.closest('.bracket-round');
-        if (!group) return;
-        var collapsed = group.classList.toggle('is-collapsed');
-        head.setAttribute('aria-expanded', String(!collapsed));
-      });
+  function clampScale(s) {
+    return Math.max(MIN_SCALE, Math.min(MAX_SCALE, s));
+  }
+
+  // 以世界坐标 (wx, wy) 为缩放原点
+  function zoomAt(screenX, screenY, newScale) {
+    newScale = clampScale(newScale);
+    var rect = viewport.getBoundingClientRect();
+    // 当前屏幕点对应的世界坐标
+    var wx = (screenX - rect.left - view.tx) / view.scale;
+    var wy = (screenY - rect.top - view.ty) / view.scale;
+    // 缩放后让该世界坐标仍对齐屏幕点
+    view.scale = newScale;
+    view.tx = screenX - rect.left - wx * newScale;
+    view.ty = screenY - rect.top - wy * newScale;
+    applyTransform();
+  }
+
+  /* ---------- 视图预设 ---------- */
+  function fitToScreen() {
+    if (!viewport || !world) return;
+    var rect = viewport.getBoundingClientRect();
+    var sx = rect.width / WORLD_W;
+    var sy = rect.height / WORLD_H;
+    view.scale = clampScale(Math.min(sx, sy) * 0.95);
+    view.tx = (rect.width - WORLD_W * view.scale) / 2;
+    view.ty = (rect.height - WORLD_H * view.scale) / 2;
+    if (view.ty < 0) view.ty = 0;
+    applyTransform();
+  }
+
+  function focusRound(round) {
+    if (!viewport) return;
+    var rect = viewport.getBoundingClientRect();
+    // 聚焦该列：让该列居中，垂直显示中段
+    var colX = (round - 1) * COL_WIDTH + NODE_W / 2;
+    // 目标 scale：让 2-3 列宽度可见
+    var targetScale = clampScale(rect.width / (COL_WIDTH * 2.2));
+    view.scale = targetScale;
+    view.tx = rect.width / 2 - colX * targetScale;
+    // 垂直居中
+    view.ty = (rect.height - WORLD_H * targetScale) / 2;
+    if (view.ty < -WORLD_H * targetScale + rect.height) {
+      view.ty = -WORLD_H * targetScale + rect.height;
+    }
+    if (view.ty > 0) view.ty = 0;
+    applyTransform();
+  }
+
+  function focusChampion() {
+    if (!viewport) return;
+    var rect = viewport.getBoundingClientRect();
+    var champX = CHAMPION_COL_X + CHAMPION_W / 2;
+    var champY = TOP_PAD + TOTAL_H / 2;
+    var targetScale = clampScale(rect.width / (COL_WIDTH * 2.5));
+    view.scale = targetScale;
+    view.tx = rect.width / 2 - champX * targetScale;
+    view.ty = rect.height / 2 - champY * targetScale;
+    applyTransform();
+  }
+
+  /* ============================================================
+   * 交互：拖拽 + 双指缩放 + 滚轮
+   * ============================================================ */
+  function bindInteraction() {
+    if (!viewport) return;
+
+    // 拖拽（pointer events 统一处理鼠标/触摸）
+    viewport.addEventListener('pointerdown', onPointerDown);
+    viewport.addEventListener('pointermove', onPointerMove);
+    viewport.addEventListener('pointerup', onPointerUp);
+    viewport.addEventListener('pointercancel', onPointerUp);
+    viewport.addEventListener('pointerleave', onPointerUp);
+
+    // 滚轮缩放（桌面端）
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+
+    // 双指缩放（触摸）— pointer events 在多指时分别触发，需手动聚合
+    // 已在 pointermove 中通过多点检测处理
+  }
+
+  function onPointerDown(e) {
+    if (!viewport) return;
+    // 检测当前活跃指针数
+    if (e.isPrimary) {
+      drag = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startTx: view.tx,
+        startTy: view.ty,
+        pointerId: e.pointerId
+      };
+      viewport.classList.add('is-dragging');
+    }
+    // 记录所有指针位置用于 pinch
+    if (!pinch) pinch = { pointers: {} };
+    pinch.pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+    if (countKeys(pinch.pointers) === 2) {
+      var pts = pinchValues(pinch.pointers);
+      pinch.startDist = distance(pts[0], pts[1]);
+      pinch.startScale = view.scale;
+      pinch.startCenter = midpoint(pts[0], pts[1]);
+      drag = null; // 双指时取消拖拽
+    }
+  }
+
+  function onPointerMove(e) {
+    if (!viewport) return;
+    if (pinch && pinch.pointers[e.pointerId]) {
+      pinch.pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (countKeys(pinch.pointers) >= 2) {
+        var pts = pinchValues(pinch.pointers);
+        var dist = distance(pts[0], pts[1]);
+        var center = midpoint(pts[0], pts[1]);
+        if (pinch.startDist > 0) {
+          var newScale = pinch.startScale * (dist / pinch.startDist);
+          zoomAt(center.x, center.y, newScale);
+        }
+        return;
+      }
+    }
+    if (drag && e.pointerId === drag.pointerId) {
+      var dx = e.clientX - drag.startX;
+      var dy = e.clientY - drag.startY;
+      view.tx = drag.startTx + dx;
+      view.ty = drag.startTy + dy;
+      applyTransform();
+    }
+  }
+
+  function onPointerUp(e) {
+    if (viewport) viewport.classList.remove('is-dragging');
+    if (pinch && pinch.pointers) {
+      delete pinch.pointers[e.pointerId];
+      if (countKeys(pinch.pointers) < 2) {
+        pinch = null;
+      }
+    }
+    if (drag && e.pointerId === drag.pointerId) {
+      drag = null;
+    }
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    var delta = e.deltaY > 0 ? 0.9 : 1.1;
+    zoomAt(e.clientX, e.clientY, view.scale * delta);
+  }
+
+  function countKeys(obj) {
+    var c = 0;
+    for (var k in obj) { if (obj.hasOwnProperty(k)) c++; }
+    return c;
+  }
+  function pinchValues(obj) {
+    var arr = [];
+    for (var k in obj) { if (obj.hasOwnProperty(k)) arr.push(obj[k]); }
+    return arr;
+  }
+  function distance(a, b) {
+    var dx = a.x - b.x, dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function midpoint(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  /* ---------- 控制按钮 ---------- */
+  function bindControls() {
+    var btnFit = document.getElementById('btn-tree-fit');
+    var btnFocus = document.getElementById('btn-tree-focus');
+    var btnIn = document.getElementById('btn-tree-zoom-in');
+    var btnOut = document.getElementById('btn-tree-zoom-out');
+    if (btnFit) btnFit.addEventListener('click', fitToScreen);
+    if (btnFocus) btnFocus.addEventListener('click', function () {
+      if (hasChampion) focusChampion();
+      else focusRound(lastCurrentRound);
+    });
+    if (btnIn) btnIn.addEventListener('click', function () {
+      if (!viewport) return;
+      var rect = viewport.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, view.scale * 1.25);
+    });
+    if (btnOut) btnOut.addEventListener('click', function () {
+      if (!viewport) return;
+      var rect = viewport.getBoundingClientRect();
+      zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, view.scale * 0.8);
     });
   }
 
-  // 暴露
-  window.BracketView = { render: render };
+  // 窗口尺寸变化时重新适配
+  window.addEventListener('resize', function () {
+    if (viewport && world) {
+      // 保持当前缩放，不强制重置
+      applyTransform();
+    }
+  });
+
+  /* ---------- 暴露 ---------- */
+  window.BracketView = {
+    render: render,
+    fitToScreen: fitToScreen,
+    focusRound: focusRound,
+    focusChampion: focusChampion
+  };
 })();
