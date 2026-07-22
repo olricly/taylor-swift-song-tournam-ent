@@ -141,29 +141,29 @@
   }
 
   /* ============================================================
-   * Web Audio API 音乐播放（生成式旋律片段，5-10 秒）
-   * 由于版权限制，使用合成音频模拟歌曲风格
+   * 音乐片段播放（iTunes Search API + 3秒截取）
+   * 使用苹果官方预览API，只播放3秒副歌片段
    * ============================================================ */
-  var audioCtx = null;
-  var currentSource = null;
-  var currentGain = null;
+  var currentAudio = null;
   var currentPlayBtn = null;
   var currentSongId = null;
   var playTimeout = null;
+  var previewCache = {}; // 内存缓存：songId -> previewUrl
+  var CACHE_KEY = 'ts_preview_cache_v1';
 
-  // 确保 AudioContext 已创建（用户交互后才能启动）
-  function ensureAudio() {
-    if (!audioCtx) {
-      try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      } catch (e) {
-        return null;
-      }
-    }
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    return audioCtx;
+  // 从 localStorage 加载缓存
+  function loadPreviewCache() {
+    try {
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (raw) previewCache = JSON.parse(raw);
+    } catch (e) {}
+  }
+
+  // 保存缓存到 localStorage
+  function savePreviewCache() {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(previewCache));
+    } catch (e) {}
   }
 
   // 停止当前播放
@@ -172,13 +172,13 @@
       clearTimeout(playTimeout);
       playTimeout = null;
     }
-    if (currentSource) {
-      try { currentSource.stop(); } catch (e) {}
-      currentSource = null;
-    }
-    if (currentGain) {
-      try { currentGain.disconnect(); } catch (e) {}
-      currentGain = null;
+    if (currentAudio) {
+      try {
+        currentAudio.pause();
+        currentAudio.src = '';
+        currentAudio.load();
+      } catch (e) {}
+      currentAudio = null;
     }
     if (currentPlayBtn) {
       currentPlayBtn.classList.remove('is-playing');
@@ -188,114 +188,202 @@
     currentSongId = null;
   }
 
-  // 根据歌曲生成一段旋律（基于歌曲 id 做确定性生成）
-  function generateMelody(song) {
-    // 用歌曲 id + popularityScore 做种子，生成确定性旋律
-    var seed = song.id * 7919 + song.popularityScore * 131;
-    function rand() {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
-    }
+  // 搜索 iTunes 获取预览 URL
+  function fetchPreviewUrl(song) {
+    return new Promise(function (resolve, reject) {
+      // 先查缓存
+      if (previewCache[song.id]) {
+        resolve(previewCache[song.id]);
+        return;
+      }
 
-    // 基于 era 的音阶（大调/小调/五声等）
-    var scales = {
-      'Taylor Swift': [0, 2, 4, 5, 7, 9, 11, 12],
-      'Fearless': [0, 2, 4, 5, 7, 9, 11, 12],
-      'Speak Now': [0, 2, 3, 5, 7, 8, 10, 12],
-      'Red': [0, 2, 4, 5, 7, 9, 11, 12],
-      '1989': [0, 2, 4, 5, 7, 9, 11, 12],
-      'reputation': [0, 1, 3, 5, 7, 8, 10, 12],
-      'Lover': [0, 2, 4, 5, 7, 9, 11, 12],
-      'folklore': [0, 2, 3, 5, 7, 8, 10, 12],
-      'evermore': [0, 2, 3, 5, 7, 8, 10, 12],
-      'Midnights': [0, 2, 4, 5, 7, 9, 11, 12],
-      'The Tortured Poets Department': [0, 1, 3, 5, 7, 8, 10, 12],
-      'The Life of a Showgirl': [0, 2, 4, 6, 7, 9, 11, 12]
-    };
-    var scale = scales[song.era] || [0, 2, 4, 5, 7, 9, 11, 12];
+      // 构建搜索词：歌名 + Taylor Swift
+      var term = encodeURIComponent(song.title + ' Taylor Swift');
+      var url = 'https://itunes.apple.com/search?term=' + term + '&media=music&limit=5';
 
-    // 基础频率（基于 popularityScore 调整音高，分数越高音越高）
-    var baseHz = 220 + (song.popularityScore / 100) * 180; // A3 到 ~F#4
+      // 用 JSONP 方式请求（避免 CORS 问题）
+      var callbackName = 'ts_itunes_cb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+      var script = document.createElement('script');
 
-    var notes = [];
-    var noteCount = 12 + Math.floor(rand() * 8); // 12-20 个音符
-    for (var i = 0; i < noteCount; i++) {
-      var degree = Math.floor(rand() * scale.length);
-      var octaveShift = rand() > 0.7 ? 12 : (rand() > 0.85 ? -12 : 0);
-      var semitones = scale[degree] + octaveShift;
-      var freq = baseHz * Math.pow(2, semitones / 12);
-      var dur = 0.12 + rand() * 0.35; // 0.12-0.47 秒
-      var vol = 0.12 + rand() * 0.18;
-      notes.push({ freq: freq, dur: dur, vol: vol, delay: i * 0.22 });
-    }
-    return notes;
+      window[callbackName] = function (data) {
+        try {
+          delete window[callbackName];
+          script.remove();
+
+          if (data && data.results && data.results.length > 0) {
+            // 找最匹配的结果
+            var best = null;
+            var lowerTitle = song.title.toLowerCase();
+            for (var i = 0; i < data.results.length; i++) {
+              var r = data.results[i];
+              if (r.previewUrl && r.artistName && r.artistName.indexOf('Taylor') >= 0) {
+                var match = r.trackName ? r.trackName.toLowerCase() : '';
+                if (match === lowerTitle || match.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(match) >= 0) {
+                  best = r.previewUrl;
+                  break;
+                }
+                if (!best) best = r.previewUrl;
+              }
+            }
+            if (best) {
+              previewCache[song.id] = best;
+              savePreviewCache();
+              resolve(best);
+            } else {
+              reject('No matching track found');
+            }
+          } else {
+            reject('No results');
+          }
+        } catch (e) {
+          reject(e.message);
+        }
+      };
+
+      script.src = url + '&callback=' + callbackName;
+      script.onerror = function () {
+        try { delete window[callbackName]; } catch (e) {}
+        script.remove();
+        reject('Network error');
+      };
+      document.head.appendChild(script);
+
+      // 超时 8 秒
+      setTimeout(function () {
+        if (window[callbackName]) {
+          try { delete window[callbackName]; } catch (e) {}
+          try { script.remove(); } catch (e) {}
+          reject('Timeout');
+        }
+      }, 8000);
+    });
   }
 
-  // 播放歌曲片段（5-10 秒）
-  function playSongSnippet(song, playBtn) {
-    var ctx = ensureAudio();
-    if (!ctx) return;
+  // 计算副歌开始时间（基于歌曲总时长估算）
+  // 流行歌副歌通常在 40%-60% 位置开始
+  function calculateChorusStart(songDuration) {
+    if (!songDuration) return 15; // 默认15秒
+    // 副歌在歌曲 45% 位置左右
+    var chorusPos = songDuration * 0.45;
+    // 确保至少从5秒开始（排除前奏太短的情况）
+    if (chorusPos < 5) chorusPos = 5;
+    // 确保3秒片段不会超出30秒预览（iTunes预览通常30秒，从某处开始）
+    // 我们直接播放预览的中间3秒，大致就是副歌
+    return 8; // 预览文件从中间取3秒（预览通常已经是副歌段）
+  }
 
+  // 播放歌曲的 3 秒片段
+  function playSongSnippet(song, playBtn) {
+    stopPlay();
+    currentSongId = song.id;
+    currentPlayBtn = playBtn;
+
+    // 先显示 loading 状态
+    playBtn.classList.add('is-playing');
+    playBtn.innerHTML = '<svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite;" aria-hidden="true"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>';
+
+    fetchPreviewUrl(song).then(function (previewUrl) {
+      if (currentSongId !== song.id) return; // 用户已切换
+
+      var audio = new Audio();
+      audio.preload = 'auto';
+      audio.crossOrigin = 'anonymous';
+
+      var snippetDuration = 3; // 3秒
+      var startOffset = calculateChorusStart(song.duration);
+
+      audio.addEventListener('canplaythrough', function onReady() {
+        audio.removeEventListener('canplaythrough', onReady);
+        if (currentSongId !== song.id) return;
+
+        try {
+          audio.currentTime = startOffset;
+        } catch (e) {
+          // 某些浏览器不支持设置 currentTime，从头播
+        }
+        audio.volume = 0.8;
+        audio.play().then(function () {
+          // 更新按钮为暂停状态
+          if (currentPlayBtn && currentSongId === song.id) {
+            currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+          }
+        }).catch(function () {
+          stopPlay();
+        });
+
+        // 3秒后停止
+        playTimeout = setTimeout(function () {
+          stopPlay();
+        }, snippetDuration * 1000);
+      });
+
+      audio.addEventListener('error', function () {
+        stopPlay();
+      });
+
+      audio.src = previewUrl;
+      currentAudio = audio;
+
+    }).catch(function () {
+      // 获取失败，回退到生成式旋律
+      stopPlay();
+      playGeneratedSnippet(song, playBtn);
+    });
+  }
+
+  // 回退：Web Audio 生成式旋律（当 iTunes 不可用时）
+  function playGeneratedSnippet(song, playBtn) {
     stopPlay();
     currentSongId = song.id;
     currentPlayBtn = playBtn;
     playBtn.classList.add('is-playing');
     playBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
 
-    var notes = generateMelody(song);
-    var totalDuration = notes[notes.length - 1].delay + notes[notes.length - 1].dur + 0.2;
-    // 限制在 5-10 秒之间
-    if (totalDuration > 10) totalDuration = 10;
-    if (totalDuration < 5) totalDuration = 5;
+    var ctx;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      stopPlay();
+      return;
+    }
+
+    var duration = 3;
+    var baseFreq = 220 + (song.popularityScore / 100) * 220;
 
     var masterGain = ctx.createGain();
     masterGain.gain.setValueAtTime(0, ctx.currentTime);
-    masterGain.gain.linearRampToValueAtTime(0.7, ctx.currentTime + 0.08);
-    masterGain.gain.setValueAtTime(0.7, ctx.currentTime + totalDuration - 0.6);
-    masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + totalDuration);
+    masterGain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 0.05);
+    masterGain.gain.setValueAtTime(0.4, ctx.currentTime + duration - 0.15);
+    masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
     masterGain.connect(ctx.destination);
-    currentGain = masterGain;
 
-    // 用振荡器阵列播放旋律
-    notes.forEach(function (note) {
-      if (note.delay > totalDuration) return;
+    // 简单的旋律
+    var intervals = [0, 4, 7, 12, 7, 4, 0, -5];
+    for (var i = 0; i < intervals.length; i++) {
       var osc = ctx.createOscillator();
-      var noteGain = ctx.createGain();
+      var g = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.value = note.freq;
-      noteGain.gain.setValueAtTime(0, ctx.currentTime + note.delay);
-      noteGain.gain.linearRampToValueAtTime(note.vol, ctx.currentTime + note.delay + 0.02);
-      noteGain.gain.setValueAtTime(note.vol, ctx.currentTime + note.delay + note.dur * 0.6);
-      noteGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + note.delay + note.dur);
-      osc.connect(noteGain);
-      noteGain.connect(masterGain);
-      osc.start(ctx.currentTime + note.delay);
-      osc.stop(ctx.currentTime + note.delay + note.dur + 0.05);
-    });
+      osc.frequency.value = baseFreq * Math.pow(2, intervals[i] / 12);
+      var t = ctx.currentTime + i * 0.35;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.15, t + 0.03);
+      g.gain.setValueAtTime(0.15, t + 0.25);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.connect(g);
+      g.connect(masterGain);
+      osc.start(t);
+      osc.stop(t + 0.36);
+    }
 
-    // 添加一个低音 pad 增加氛围
-    var padOsc = ctx.createOscillator();
-    var padGain = ctx.createGain();
-    padOsc.type = 'triangle';
-    padOsc.frequency.value = 110 + (song.popularityScore / 100) * 55;
-    padGain.gain.setValueAtTime(0, ctx.currentTime);
-    padGain.gain.linearRampToValueAtTime(0.06, ctx.currentTime + 0.3);
-    padGain.gain.setValueAtTime(0.06, ctx.currentTime + totalDuration - 1);
-    padGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + totalDuration);
-    padOsc.connect(padGain);
-    padGain.connect(masterGain);
-    padOsc.start();
-    padOsc.stop(ctx.currentTime + totalDuration + 0.1);
-
-    // 记录 source 便于停止
-    currentSource = { stop: function() {
-      try { masterGain.gain.cancelScheduledValues(ctx.currentTime); masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1); } catch(e) {}
-    }};
-
-    // 到时自动停止
     playTimeout = setTimeout(function () {
       stopPlay();
-    }, totalDuration * 1000);
+    }, duration * 1000);
+
+    currentAudio = {
+      pause: function () {
+        try { masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1); } catch (e) {}
+      }
+    };
   }
 
   // 切换播放/暂停
@@ -882,6 +970,9 @@
    * ============================================================ */
   function init() {
     cacheEls();
+
+    // 加载预览缓存
+    loadPreviewCache();
 
     // 数据校验
     if (!window.TS_SONGS || window.TS_SONGS.length !== 128) {
