@@ -23,15 +23,15 @@
   for (var r = 1; r <= 7; r++) { CUM[r] = CUM[r - 1] + MATCHES_PER_ROUND[r - 1]; }
 
   // 布局常量（逻辑像素）
-  var NODE_W = 180;
-  var NODE_H = 26;
-  var COL_GAP = 40;
-  var COL_WIDTH = NODE_W + COL_GAP;        // 220
-  var TOP_PAD = 44;                         // 列标题预留高度
-  var SLOT_H_R1 = 32;                       // Round 1 每槽位高度
-  var TOTAL_H = 128 * SLOT_H_R1;            // 4096，Round 1 撑满
+  var NODE_W = 190;
+  var NODE_H = 32;
+  var COL_GAP = 44;
+  var COL_WIDTH = NODE_W + COL_GAP;        // 234
+  var TOP_PAD = 52;                         // 列标题预留高度
+  var SLOT_H_R1 = 38;                       // Round 1 每槽位高度
+  var TOTAL_H = 128 * SLOT_H_R1;            // 4864，Round 1 撑满
   var CHAMPION_COL_X = 7 * COL_WIDTH;       // 冠军列 x
-  var CHAMPION_W = NODE_W + 24;
+  var CHAMPION_W = NODE_W + 28;
   var WORLD_W = CHAMPION_COL_X + CHAMPION_W + 30;
   var WORLD_H = TOTAL_H + TOP_PAD + 40;
 
@@ -79,6 +79,32 @@
       if (window.TS_SONGS[i].id === id) return window.TS_SONGS[i];
     }
     return null;
+  }
+
+  // 将十六进制色转 RGB
+  function hexToRgb(hex) {
+    hex = (hex || '#000').replace('#', '');
+    if (hex.length === 3) hex = hex.split('').map(function (c) { return c + c; }).join('');
+    return {
+      r: parseInt(hex.substr(0, 2), 16) || 0,
+      g: parseInt(hex.substr(2, 2), 16) || 0,
+      b: parseInt(hex.substr(4, 2), 16) || 0
+    };
+  }
+
+  // 计算相对亮度（WCAG），用于自动选择文字深浅色
+  function relativeLuminance(hex) {
+    var rgb = hexToRgb(hex);
+    var channel = function (v) {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+  }
+
+  // 根据 era 色返回适合的文字色（亮背景→深字，暗背景→亮字）
+  function pickTextColor(bgHex) {
+    return relativeLuminance(bgHex) > 0.42 ? '#1A0E0E' : '#FBF6EB';
   }
 
   /* ============================================================
@@ -272,7 +298,7 @@
            ' C ' + mx + ' ' + y1 + ', ' + mx + ' ' + y2 + ', ' + x2 + ' ' + y2 + '" />';
   }
 
-  /* ---------- 渲染单个节点 ---------- */
+  /* ---------- 渲染单个节点（思维导图风格卡片） ---------- */
   function renderNode(n, currentRound) {
     var cls = 'tree-node';
     if (n.status === 'winner') cls += ' is-winner';
@@ -290,11 +316,34 @@
     var inner = '';
     if (n.song) {
       var eraColor = n.song.coverColor;
-      inner = '<span class="node-era" style="background:' + eraColor + ';"></span>' +
-              '<span class="node-title">' + escapeHtml(n.song.title) + '</span>' +
-              '<span class="node-seed">#' + getSeed(n.song) + '</span>';
+      var textColor = pickTextColor(eraColor);
+
+      if (n.status === 'champion') {
+        // 冠军：金色卡片
+        style += '--node-bg:linear-gradient(135deg,' + eraColor + ',#D4AF37);--node-fg:#1A0E0E;';
+        inner = '<span class="node-crown" aria-hidden="true">👑</span>' +
+                '<span class="node-title">' + escapeHtml(n.song.title) + '</span>' +
+                '<span class="node-era-tag">' + escapeHtml(n.song.era) + '</span>';
+      } else if (n.status === 'winner') {
+        // 胜者：era 色填充 + 金边
+        style += '--node-bg:' + eraColor + ';--node-fg:' + textColor + ';';
+        inner = '<span class="node-dot" style="background:' + textColor + ';"></span>' +
+                '<span class="node-title">' + escapeHtml(n.song.title) + '</span>' +
+                '<span class="node-seed">#' + getSeed(n.song) + '</span>';
+      } else if (n.status === 'loser') {
+        // 败者：era 色淡化
+        style += '--node-bg:' + eraColor + ';--node-fg:' + textColor + ';';
+        inner = '<span class="node-dot" style="background:' + textColor + ';opacity:.4;"></span>' +
+                '<span class="node-title">' + escapeHtml(n.song.title) + '</span>' +
+                '<span class="node-seed">#' + getSeed(n.song) + '</span>';
+      } else {
+        // 待定：半透明 era 色
+        style += '--node-bg:' + eraColor + ';--node-fg:' + textColor + ';';
+        inner = '<span class="node-dot" style="background:' + textColor + ';opacity:.5;"></span>' +
+                '<span class="node-title">' + escapeHtml(n.song.title) + '</span>';
+      }
     } else {
-      inner = '<span class="node-title">待定</span>';
+      inner = '<span class="node-title node-title--placeholder">待定</span>';
     }
 
     return '<div class="' + cls + '" style="' + style + '">' + inner + '</div>';

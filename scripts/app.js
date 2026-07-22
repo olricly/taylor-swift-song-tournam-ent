@@ -141,15 +141,36 @@
   }
 
   /* ============================================================
-   * 音乐片段播放（iTunes Search API + 3秒截取）
-   * 使用苹果官方预览API，只播放3秒副歌片段
+   * 音乐片段播放（可配置音源）
+   * 默认：iTunes Search API 官方 30 秒预览（合法授权）
+   * 支持：自定义外部 API（通过 AUDIO_CONFIG 配置）
+   * 时长：默认播放完整预览（约30秒），可配置
    * ============================================================ */
+
+  // 音频配置：用户可在此接入外部 API 规避版权风险
+  var AUDIO_CONFIG = {
+    // 默认音源：iTunes 官方预览（合法，无需密钥）
+    source: 'itunes',
+    // 播放时长（秒）。null = 播放完整预览（约30秒）；数字 = 截取指定秒数
+    duration: null,
+    // 截取起始位置（秒），从预览的此处开始播放
+    startOffset: 0,
+    // 自定义音源配置（如需接入外部 API，填写此项）
+    // external: {
+    //   // 例：接入网易云/QQ音乐等第三方预览 API
+    //   searchUrl: 'https://your-api.com/search?q={query}',
+    //   previewField: 'preview_url',  // 返回 JSON 中预览地址的字段名
+    //   termTemplate: '{title} Taylor Swift'
+    // }
+    external: null
+  };
+
   var currentAudio = null;
   var currentPlayBtn = null;
   var currentSongId = null;
   var playTimeout = null;
   var previewCache = {}; // 内存缓存：songId -> previewUrl
-  var CACHE_KEY = 'ts_preview_cache_v1';
+  var CACHE_KEY = 'ts_preview_cache_v2';
 
   // 从 localStorage 加载缓存
   function loadPreviewCache() {
@@ -190,6 +211,86 @@
 
   // 搜索 iTunes 获取预览 URL
   function fetchPreviewUrl(song) {
+    // 如果配置了外部 API，优先使用
+    if (AUDIO_CONFIG.external && AUDIO_CONFIG.external.searchUrl) {
+      return fetchFromExternalApi(song);
+    }
+    return fetchFromItunes(song);
+  }
+
+  // 从外部自定义 API 获取预览（规避版权风险）
+  function fetchFromExternalApi(song) {
+    return new Promise(function (resolve, reject) {
+      var cfg = AUDIO_CONFIG.external;
+      var query = (cfg.termTemplate || '{title} Taylor Swift')
+        .replace('{title}', song.title);
+      var url = cfg.searchUrl.replace('{query}', encodeURIComponent(query));
+
+      // JSONP 方式（若 API 支持 callback 参数）
+      if (cfg.jsonp) {
+        var cbName = 'ts_ext_cb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+        var script = document.createElement('script');
+        window[cbName] = function (data) {
+          try { delete window[cbName]; } catch (e) {}
+          script.remove();
+          var previewUrl = extractPreviewFromData(data, cfg.previewField);
+          if (previewUrl) {
+            previewCache[song.id] = previewUrl;
+            savePreviewCache();
+            resolve(previewUrl);
+          } else {
+            // 外部 API 失败，回退到 iTunes
+            fetchFromItunes(song).then(resolve, reject);
+          }
+        };
+        script.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'callback=' + cbName;
+        script.onerror = function () {
+          try { delete window[cbName]; } catch (e) {}
+          script.remove();
+          fetchFromItunes(song).then(resolve, reject);
+        };
+        document.head.appendChild(script);
+        setTimeout(function () {
+          if (window[cbName]) {
+            try { delete window[cbName]; } catch (e) {}
+            script.remove();
+            fetchFromItunes(song).then(resolve, reject);
+          }
+        }, 8000);
+      } else {
+        // 普通 fetch 方式
+        fetch(url).then(function (res) { return res.json(); }).then(function (data) {
+          var previewUrl = extractPreviewFromData(data, cfg.previewField);
+          if (previewUrl) {
+            previewCache[song.id] = previewUrl;
+            savePreviewCache();
+            resolve(previewUrl);
+          } else {
+            fetchFromItunes(song).then(resolve, reject);
+          }
+        }).catch(function () {
+          fetchFromItunes(song).then(resolve, reject);
+        });
+      }
+    });
+  }
+
+  // 从返回数据中提取预览 URL（支持嵌套字段，如 'data.preview_url'）
+  function extractPreviewFromData(data, fieldPath) {
+    if (!data || !fieldPath) return null;
+    var parts = fieldPath.split('.');
+    var cur = data;
+    for (var i = 0; i < parts.length; i++) {
+      if (cur == null) return null;
+      cur = cur[parts[i]];
+    }
+    // 如果是数组，取第一个
+    if (Array.isArray(cur)) cur = cur[0];
+    return (typeof cur === 'string') ? cur : null;
+  }
+
+  // 从 iTunes 获取预览
+  function fetchFromItunes(song) {
     return new Promise(function (resolve, reject) {
       // 先查缓存
       if (previewCache[song.id]) {
@@ -259,20 +360,7 @@
     });
   }
 
-  // 计算副歌开始时间（基于歌曲总时长估算）
-  // 流行歌副歌通常在 40%-60% 位置开始
-  function calculateChorusStart(songDuration) {
-    if (!songDuration) return 15; // 默认15秒
-    // 副歌在歌曲 45% 位置左右
-    var chorusPos = songDuration * 0.45;
-    // 确保至少从5秒开始（排除前奏太短的情况）
-    if (chorusPos < 5) chorusPos = 5;
-    // 确保3秒片段不会超出30秒预览（iTunes预览通常30秒，从某处开始）
-    // 我们直接播放预览的中间3秒，大致就是副歌
-    return 8; // 预览文件从中间取3秒（预览通常已经是副歌段）
-  }
-
-  // 播放歌曲的 3 秒片段
+  // 播放歌曲片段（时长由 AUDIO_CONFIG.duration 控制，默认播放完整预览）
   function playSongSnippet(song, playBtn) {
     stopPlay();
     currentSongId = song.id;
@@ -289,21 +377,20 @@
       audio.preload = 'auto';
       audio.crossOrigin = 'anonymous';
 
-      var snippetDuration = 3; // 3秒
-      var startOffset = calculateChorusStart(song.duration);
+      // 播放时长：null = 完整预览；数字 = 截取指定秒数
+      var snippetDuration = AUDIO_CONFIG.duration; // null 或 秒数
+      var startOffset = AUDIO_CONFIG.startOffset || 0;
 
       audio.addEventListener('canplaythrough', function onReady() {
         audio.removeEventListener('canplaythrough', onReady);
         if (currentSongId !== song.id) return;
 
-        try {
-          audio.currentTime = startOffset;
-        } catch (e) {
-          // 某些浏览器不支持设置 currentTime，从头播
+        // 设置起始位置（如果配置了）
+        if (startOffset > 0) {
+          try { audio.currentTime = startOffset; } catch (e) {}
         }
-        audio.volume = 0.8;
+        audio.volume = 0.85;
         audio.play().then(function () {
-          // 更新按钮为暂停状态
           if (currentPlayBtn && currentSongId === song.id) {
             currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
           }
@@ -311,10 +398,17 @@
           stopPlay();
         });
 
-        // 3秒后停止
-        playTimeout = setTimeout(function () {
-          stopPlay();
-        }, snippetDuration * 1000);
+        // 如果配置了固定时长，到时自动停止；否则播放到自然结束
+        if (snippetDuration && snippetDuration > 0) {
+          playTimeout = setTimeout(function () {
+            stopPlay();
+          }, snippetDuration * 1000);
+        } else {
+          // 完整预览模式：播放结束时自动停止
+          audio.addEventListener('ended', function () {
+            stopPlay();
+          });
+        }
       });
 
       audio.addEventListener('error', function () {

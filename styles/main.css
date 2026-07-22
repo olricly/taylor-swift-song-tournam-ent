@@ -751,118 +751,138 @@ body::before {
 .bracket-col-label {
   position: absolute;
   top: 0;
-  height: 28px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-secondary);
-  background: rgba(14, 11, 15, 0.85);
-  border-bottom: 1px solid rgba(212, 175, 55, 0.18);
-  border-radius: 6px 6px 0 0;
+  color: var(--accent-gold);
+  background: rgba(26, 18, 28, 0.95);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 6px;
   pointer-events: none;
   white-space: nowrap;
+  text-shadow: 0 0 8px rgba(212, 175, 55, 0.3);
 }
 
-/* 节点卡片 */
+/* 节点卡片（思维导图风格：era 色填充 + 自动对比文字） */
 .tree-node {
   position: absolute;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  height: 26px;
-  border-radius: 6px;
-  background: rgba(20, 16, 22, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 7px;
+  padding: 0 10px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--node-bg, rgba(40, 30, 45, 0.92));
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
   font-family: var(--font-body);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1;
-  color: var(--text-primary);
+  color: var(--node-fg, var(--text-primary));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: transform 0.15s, box-shadow 0.2s;
+  transition: transform 0.15s, box-shadow 0.2s, border-color 0.2s;
   pointer-events: auto;
+  letter-spacing: 0.01em;
 }
-.tree-node:hover { transform: translateY(-1px); z-index: 5; }
-.tree-node .node-era {
+.tree-node:hover {
+  transform: translateY(-2px) scale(1.02);
+  z-index: 8;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.tree-node .node-dot {
   flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--node-era-color, var(--text-dim));
 }
 .tree-node .node-title {
   flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 600;
 }
 .tree-node .node-seed {
   flex: 0 0 auto;
   font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.7;
+}
+.tree-node .node-crown {
+  font-size: 14px;
+}
+.tree-node .node-era-tag {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
   font-size: 9px;
-  color: var(--text-dim);
+  opacity: 0.75;
+  letter-spacing: 0.04em;
+}
+.tree-node .node-title--placeholder {
+  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+  font-weight: 400;
 }
 
-/* 胜者节点 */
+/* 胜者节点：era 色填充 + 金边高亮 */
 .tree-node.is-winner {
   border-color: var(--accent-gold);
-  background: linear-gradient(90deg, rgba(212, 175, 55, 0.14), rgba(212, 175, 55, 0.04));
-  box-shadow: 0 0 8px rgba(212, 175, 55, 0.25);
+  border-width: 2px;
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.35), 0 2px 6px rgba(0, 0, 0, 0.3);
+  font-weight: 700;
 }
-.tree-node.is-winner .node-title { color: var(--accent-gold); font-weight: 600; }
 
-/* 败者节点 */
+/* 败者节点：降低不透明度 + 删除线 */
 .tree-node.is-loser {
-  opacity: 0.5;
-  background: rgba(20, 16, 22, 0.7);
+  opacity: 0.42;
+  filter: saturate(0.6);
 }
-.tree-node.is-loser .node-title { color: var(--text-dim); text-decoration: line-through; }
+.tree-node.is-loser .node-title {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
 
-/* 待定节点 */
+/* 待定节点：半透明 + 虚线边 */
 .tree-node.is-pending {
+  opacity: 0.62;
   border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.18);
-  color: var(--text-dim);
+  border-color: rgba(255, 255, 255, 0.28);
   font-style: italic;
-  background: transparent;
+  font-weight: 500;
 }
 
 /* 当前轮节点脉冲提示 */
 .tree-node.is-current {
   border-color: var(--accent-gold);
+  border-width: 2px;
   animation: nodePulse 1.6s ease-in-out infinite;
 }
 @keyframes nodePulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 175, 55, 0.4); }
-  50% { box-shadow: 0 0 0 4px rgba(212, 175, 55, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 175, 55, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(212, 175, 55, 0); }
 }
 
 /* 冠军节点 */
 .tree-node.is-champion {
-  height: 44px;
-  padding: 0 14px;
-  border: 2px solid var(--accent-gold);
-  background: linear-gradient(135deg, rgba(212, 175, 55, 0.28), rgba(212, 175, 55, 0.08));
-  box-shadow: 0 0 24px rgba(212, 175, 55, 0.5);
-  font-size: 13px;
+  height: 48px;
+  padding: 0 16px;
+  border: 2.5px solid var(--accent-gold);
+  box-shadow: 0 0 28px rgba(212, 175, 55, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 14px;
 }
 .tree-node.is-champion .node-title {
   font-family: var(--font-display);
   font-style: italic;
-  font-weight: 600;
-  font-size: 14px;
-}
-.tree-node.is-champion::before {
-  content: '👑';
-  margin-right: 2px;
-  font-size: 14px;
+  font-weight: 700;
+  font-size: 15px;
 }
 
 /* SVG 连接线层 */
@@ -875,20 +895,20 @@ body::before {
 }
 .bracket-svg .link {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.12);
-  stroke-width: 1;
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 1.2;
   transition: stroke 0.2s, stroke-width 0.2s;
 }
 .bracket-svg .link.is-win {
-  stroke: rgba(212, 175, 55, 0.55);
-  stroke-width: 1.4;
+  stroke: rgba(212, 175, 55, 0.7);
+  stroke-width: 1.8;
 }
 .bracket-svg .link.is-lose {
-  stroke: rgba(255, 255, 255, 0.06);
+  stroke: rgba(255, 255, 255, 0.1);
   stroke-dasharray: 2 3;
 }
 .bracket-svg .link.is-pending {
-  stroke: rgba(255, 255, 255, 0.08);
+  stroke: rgba(255, 255, 255, 0.14);
   stroke-dasharray: 3 3;
 }
 
