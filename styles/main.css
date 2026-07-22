@@ -1,7 +1,7 @@
 /* ============================================================
  * Taylor Swift 歌曲对战锦标赛 — 视觉系统
  * 剧场/showgirl 美学：深炭黑基底 + showgirl 金 + era 主题色切换
- * 字体：Cormorant Garamond（display）+ DM Sans（body）+ JetBrains Mono（数字）
+ * 字体：Fraunces（复古衬线 display）+ Inter Tight（现代无衬线 body）+ JetBrains Mono（数字）
  * ============================================================ */
 
 /* ---------- CSS 变量：配色 / 字体 / 间距 / 圆角 / 阴影 ---------- */
@@ -26,9 +26,9 @@
   --era-color: #1A237E;
   --era-glow: rgba(26, 35, 126, 0.45);
 
-  /* 字体 */
-  --font-display: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
-  --font-body: 'DM Sans', 'Helvetica Neue', Arial, sans-serif;
+  /* 字体：Fraunces（复古衬线display）+ Inter Tight（现代无衬线body）+ JetBrains Mono（数字） */
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-body: 'Inter Tight', 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
 
   /* 间距 / 圆角 / 阴影 */
@@ -341,7 +341,7 @@ body::before {
 .song-card {
   position: relative;
   flex: 1 1 0;
-  min-height: 200px;
+  min-height: 220px;
   border-radius: var(--radius-lg);
   padding: 26px 24px 22px;
   cursor: pointer;
@@ -354,34 +354,80 @@ body::before {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition: transform 0.18s ease, box-shadow 0.3s ease, border-color 0.3s ease;
-  /* 卡片色块渐变背景：用 coverColor */
   --cover: #6A4C93;
 }
 .song-card::before {
-  /* 封面色块（左上角大面积色域） */
+  /* 左侧色域渐变：从左到右由 coverColor 柔和过渡到透明 */
   content: '';
   position: absolute;
   top: 0;
   left: 0;
-  width: 42%;
+  width: 65%;
   height: 100%;
-  background: linear-gradient(135deg, var(--cover), color-mix(in srgb, var(--cover) 40%, #000));
-  opacity: 0.5;
+  background:
+    linear-gradient(105deg,
+      color-mix(in srgb, var(--cover) 85%, #000) 0%,
+      color-mix(in srgb, var(--cover) 55%, #000) 35%,
+      color-mix(in srgb, var(--cover) 25%, transparent) 65%,
+      transparent 100%);
   z-index: 0;
 }
 .song-card::after {
-  /* 右下角 era 色辉光 */
+  /* 右下角光晕 */
   content: '';
   position: absolute;
-  bottom: -40px;
-  right: -40px;
-  width: 200px;
-  height: 200px;
+  bottom: -60px;
+  right: -30px;
+  width: 240px;
+  height: 240px;
   border-radius: 50%;
-  background: radial-gradient(circle, var(--cover), transparent 70%);
-  opacity: 0.25;
+  background: radial-gradient(circle, var(--cover), transparent 65%);
+  opacity: 0.22;
   z-index: 0;
+  filter: blur(8px);
 }
+
+/* 播放按钮 */
+.play-btn {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  transition: all 0.2s ease;
+  padding: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.play-btn:hover {
+  border-color: var(--accent-gold);
+  background: rgba(212, 175, 55, 0.2);
+  transform: scale(1.08);
+}
+.play-btn:active { transform: scale(0.94); }
+.play-btn.is-playing {
+  border-color: var(--accent-gold);
+  background: var(--accent-gold);
+  color: #1A0E0E;
+  box-shadow: 0 0 16px rgba(212, 175, 55, 0.5);
+}
+.play-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.play-btn.is-playing svg { fill: #1A0E0E; }
 
 .song-card:hover {
   transform: translateY(-4px);

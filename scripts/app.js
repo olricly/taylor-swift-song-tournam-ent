@@ -26,7 +26,7 @@
   var CUM = [0, 0, 0, 0, 0, 0, 0, 0];
   for (var r = 1; r <= 7; r++) { CUM[r] = CUM[r - 1] + MATCHES_PER_ROUND[r - 1]; }
   var TOTAL_MATCHES = 127; // 64+32+16+8+4+2+1
-  var STORAGE_KEY = 'ts_tournament_v1';
+  var STORAGE_KEY = 'ts_tournament_v2';
 
   /* ---------- 全局状态 ---------- */
   var State = {
@@ -82,34 +82,43 @@
   function completedTotal() { return State.bracket.length; }
 
   /* ============================================================
-   * 配对生成：seed 法
+   * 配对生成：Fisher-Yates 随机洗牌 + 两两配对
+   * 保证每首歌出现且仅出现一次
    * ============================================================ */
-  // 首轮：按 popularityScore 降序排，赋 seed，然后 1vN、2v(N-1)...
+  // Fisher-Yates 洗牌算法
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+
+  // 首轮：随机洗牌后两两配对
   function initFirstRound() {
-    var songs = window.TS_SONGS.slice();
-    // 降序排（稳定排序保证并列分数一致）
-    songs.sort(function (a, b) { return b.popularityScore - a.popularityScore; });
-    // 赋 seed
+    var songs = shuffle(window.TS_SONGS.slice());
+    // 赋 seed（1-128）保留用于排序
     State.seeds = {};
     songs.forEach(function (s, i) { State.seeds[s.id] = i + 1; });
-    // seed 法配对
-    State.pairings = seedPair(songs);
+    // 两两配对
+    State.pairings = makePairs(songs);
     State.currentRound = 1;
     State.currentMatch = 0;
   }
 
-  // seed 配对：升序的前半 vs 后半倒序
-  function seedPair(sortedSongs) {
-    var n = sortedSongs.length;
+  // 将数组两两配对
+  function makePairs(arr) {
     var pairs = [];
-    for (var i = 0; i < n / 2; i++) {
-      pairs.push([sortedSongs[i], sortedSongs[n - 1 - i]]);
+    for (var i = 0; i < arr.length; i += 2) {
+      pairs.push([arr[i], arr[i + 1]]);
     }
     return pairs;
   }
 
-  // 下一轮配对：晋级歌曲按 seed 升序排，再 seed 法配对
-  // 参数 fromRound 指定从哪一轮收集晋级者（避免依赖 State.currentRound 时机）
+  // 下一轮配对：晋级歌曲随机洗牌后两两配对
   function buildNextRoundPairings(fromRound) {
     var round = fromRound || State.currentRound;
     var advancing = [];
@@ -119,11 +128,9 @@
         if (winner) advancing.push(winner);
       }
     });
-    // 按 seed 升序（保持热门不相遇）
-    advancing.sort(function (a, b) {
-      return (State.seeds[a.id] || 999) - (State.seeds[b.id] || 999);
-    });
-    return seedPair(advancing);
+    // 随机洗牌
+    advancing = shuffle(advancing);
+    return makePairs(advancing);
   }
 
   function findSong(id) {
@@ -131,6 +138,173 @@
       if (window.TS_SONGS[i].id === id) return window.TS_SONGS[i];
     }
     return null;
+  }
+
+  /* ============================================================
+   * Web Audio API 音乐播放（生成式旋律片段，5-10 秒）
+   * 由于版权限制，使用合成音频模拟歌曲风格
+   * ============================================================ */
+  var audioCtx = null;
+  var currentSource = null;
+  var currentGain = null;
+  var currentPlayBtn = null;
+  var currentSongId = null;
+  var playTimeout = null;
+
+  // 确保 AudioContext 已创建（用户交互后才能启动）
+  function ensureAudio() {
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (e) {
+        return null;
+      }
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    return audioCtx;
+  }
+
+  // 停止当前播放
+  function stopPlay() {
+    if (playTimeout) {
+      clearTimeout(playTimeout);
+      playTimeout = null;
+    }
+    if (currentSource) {
+      try { currentSource.stop(); } catch (e) {}
+      currentSource = null;
+    }
+    if (currentGain) {
+      try { currentGain.disconnect(); } catch (e) {}
+      currentGain = null;
+    }
+    if (currentPlayBtn) {
+      currentPlayBtn.classList.remove('is-playing');
+      currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+      currentPlayBtn = null;
+    }
+    currentSongId = null;
+  }
+
+  // 根据歌曲生成一段旋律（基于歌曲 id 做确定性生成）
+  function generateMelody(song) {
+    // 用歌曲 id + popularityScore 做种子，生成确定性旋律
+    var seed = song.id * 7919 + song.popularityScore * 131;
+    function rand() {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    }
+
+    // 基于 era 的音阶（大调/小调/五声等）
+    var scales = {
+      'Taylor Swift': [0, 2, 4, 5, 7, 9, 11, 12],
+      'Fearless': [0, 2, 4, 5, 7, 9, 11, 12],
+      'Speak Now': [0, 2, 3, 5, 7, 8, 10, 12],
+      'Red': [0, 2, 4, 5, 7, 9, 11, 12],
+      '1989': [0, 2, 4, 5, 7, 9, 11, 12],
+      'reputation': [0, 1, 3, 5, 7, 8, 10, 12],
+      'Lover': [0, 2, 4, 5, 7, 9, 11, 12],
+      'folklore': [0, 2, 3, 5, 7, 8, 10, 12],
+      'evermore': [0, 2, 3, 5, 7, 8, 10, 12],
+      'Midnights': [0, 2, 4, 5, 7, 9, 11, 12],
+      'The Tortured Poets Department': [0, 1, 3, 5, 7, 8, 10, 12],
+      'The Life of a Showgirl': [0, 2, 4, 6, 7, 9, 11, 12]
+    };
+    var scale = scales[song.era] || [0, 2, 4, 5, 7, 9, 11, 12];
+
+    // 基础频率（基于 popularityScore 调整音高，分数越高音越高）
+    var baseHz = 220 + (song.popularityScore / 100) * 180; // A3 到 ~F#4
+
+    var notes = [];
+    var noteCount = 12 + Math.floor(rand() * 8); // 12-20 个音符
+    for (var i = 0; i < noteCount; i++) {
+      var degree = Math.floor(rand() * scale.length);
+      var octaveShift = rand() > 0.7 ? 12 : (rand() > 0.85 ? -12 : 0);
+      var semitones = scale[degree] + octaveShift;
+      var freq = baseHz * Math.pow(2, semitones / 12);
+      var dur = 0.12 + rand() * 0.35; // 0.12-0.47 秒
+      var vol = 0.12 + rand() * 0.18;
+      notes.push({ freq: freq, dur: dur, vol: vol, delay: i * 0.22 });
+    }
+    return notes;
+  }
+
+  // 播放歌曲片段（5-10 秒）
+  function playSongSnippet(song, playBtn) {
+    var ctx = ensureAudio();
+    if (!ctx) return;
+
+    stopPlay();
+    currentSongId = song.id;
+    currentPlayBtn = playBtn;
+    playBtn.classList.add('is-playing');
+    playBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
+
+    var notes = generateMelody(song);
+    var totalDuration = notes[notes.length - 1].delay + notes[notes.length - 1].dur + 0.2;
+    // 限制在 5-10 秒之间
+    if (totalDuration > 10) totalDuration = 10;
+    if (totalDuration < 5) totalDuration = 5;
+
+    var masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(0, ctx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(0.7, ctx.currentTime + 0.08);
+    masterGain.gain.setValueAtTime(0.7, ctx.currentTime + totalDuration - 0.6);
+    masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + totalDuration);
+    masterGain.connect(ctx.destination);
+    currentGain = masterGain;
+
+    // 用振荡器阵列播放旋律
+    notes.forEach(function (note) {
+      if (note.delay > totalDuration) return;
+      var osc = ctx.createOscillator();
+      var noteGain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = note.freq;
+      noteGain.gain.setValueAtTime(0, ctx.currentTime + note.delay);
+      noteGain.gain.linearRampToValueAtTime(note.vol, ctx.currentTime + note.delay + 0.02);
+      noteGain.gain.setValueAtTime(note.vol, ctx.currentTime + note.delay + note.dur * 0.6);
+      noteGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + note.delay + note.dur);
+      osc.connect(noteGain);
+      noteGain.connect(masterGain);
+      osc.start(ctx.currentTime + note.delay);
+      osc.stop(ctx.currentTime + note.delay + note.dur + 0.05);
+    });
+
+    // 添加一个低音 pad 增加氛围
+    var padOsc = ctx.createOscillator();
+    var padGain = ctx.createGain();
+    padOsc.type = 'triangle';
+    padOsc.frequency.value = 110 + (song.popularityScore / 100) * 55;
+    padGain.gain.setValueAtTime(0, ctx.currentTime);
+    padGain.gain.linearRampToValueAtTime(0.06, ctx.currentTime + 0.3);
+    padGain.gain.setValueAtTime(0.06, ctx.currentTime + totalDuration - 1);
+    padGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + totalDuration);
+    padOsc.connect(padGain);
+    padGain.connect(masterGain);
+    padOsc.start();
+    padOsc.stop(ctx.currentTime + totalDuration + 0.1);
+
+    // 记录 source 便于停止
+    currentSource = { stop: function() {
+      try { masterGain.gain.cancelScheduledValues(ctx.currentTime); masterGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1); } catch(e) {}
+    }};
+
+    // 到时自动停止
+    playTimeout = setTimeout(function () {
+      stopPlay();
+    }, totalDuration * 1000);
+  }
+
+  // 切换播放/暂停
+  function togglePlay(song, playBtn) {
+    if (currentSongId === song.id && currentPlayBtn === playBtn) {
+      stopPlay();
+    } else {
+      playSongSnippet(song, playBtn);
+    }
   }
 
   /* ============================================================
@@ -151,6 +325,9 @@
     var songA = pair[0], songB = pair[1];
     var no = matchNo(State.currentRound, State.currentMatch);
     var total = roundTotal(State.currentRound);
+
+    // 切换场次时停止播放
+    stopPlay();
 
     // 顶部场次信息
     els.matchNo.textContent = 'M' + no;
@@ -180,11 +357,15 @@
 
     var seed = State.seeds[song.id] || '—';
     var html =
+      // 播放按钮
+      '<button class="play-btn" type="button" aria-label="播放 ' + escapeHtml(song.title) + '" data-play-id="' + song.id + '">' +
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>' +
+      '</button>' +
       '<div class="card-inner">' +
         '<div class="card-meta">' +
           '<span class="card-era-tag">' + escapeHtml(song.era) + '</span>' +
           (song.isVault ? '<span class="card-vault-tag">Vault</span>' : '') +
-          '<span class="card-meta-extra" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);">Seed #' + seed + '</span>' +
+          '<span class="card-meta-extra" style="font-family:var(--font-mono);font-size:0.72rem;color:var(--text-dim);">#' + seed + '</span>' +
         '</div>' +
         '<h3 class="card-title">' + escapeHtml(song.title) + '</h3>' +
         '<p class="card-album">' + escapeHtml(song.album) + '</p>' +
@@ -199,11 +380,31 @@
       '</div>';
     card.innerHTML = html;
 
-    // 点击 / 键盘选择
-    card.addEventListener('click', function () { selectWinner(song.id, side); });
+    // 点击卡片选择胜者
+    card.addEventListener('click', function (e) {
+      // 如果点击的是播放按钮，不触卡片选择
+      if (e.target.closest('.play-btn')) return;
+      selectWinner(song.id, side);
+    });
     card.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectWinner(song.id, side); }
     });
+
+    // 播放按钮
+    var playBtn = card.querySelector('.play-btn');
+    playBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      togglePlay(song, playBtn);
+    });
+    playBtn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePlay(song, playBtn);
+      }
+    });
+
     return card;
   }
 
@@ -345,6 +546,9 @@
     var seed = State.seeds[song.id] || '—';
     els.championCard.style.setProperty('--cover', song.coverColor);
     els.championCard.innerHTML =
+      '<button class="play-btn" type="button" aria-label="播放 ' + escapeHtml(song.title) + '" data-play-id="' + song.id + '">' +
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>' +
+      '</button>' +
       '<div class="card-inner">' +
         '<div class="card-meta" style="justify-content:center;">' +
           '<span class="card-era-tag">' + escapeHtml(song.era) + '</span>' +
@@ -354,7 +558,7 @@
         '<p class="card-album" style="text-align:center;">' + escapeHtml(song.album) + ' · ' + song.year + '</p>' +
         '<p class="card-year-duration" style="justify-content:center;margin-top:6px;">' +
           '<span>' + fmtDuration(song.duration) + '</span>' +
-          '<span>Seed #' + seed + '</span>' +
+          '<span>#' + seed + '</span>' +
         '</p>' +
         '<div class="card-popularity">' +
           '<div class="pop-label" style="justify-content:center;"><span>热度</span><span>' + song.popularityScore + '</span></div>' +
@@ -362,14 +566,22 @@
         '</div>' +
       '</div>';
 
+    // 冠军卡片播放按钮
+    var champPlayBtn = els.championCard.querySelector('.play-btn');
+    if (champPlayBtn) {
+      champPlayBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        togglePlay(song, champPlayBtn);
+      });
+    }
+
     // 启动 confetti
     startConfetti(song.coverColor);
   }
 
-  /* ============================================================
-   * 重新开始
-   * ============================================================ */
+  /* ---------- 重新开始 ---------- */
   function restart() {
+    stopPlay();
     localStorage.removeItem(STORAGE_KEY);
     State.bracket = [];
     State.champion = null;
@@ -378,7 +590,6 @@
     saveState();
     switchView('battle');
     renderCurrentMatch();
-    // 刷新对战表
     if (window.BracketView && window.BracketView.render) {
       window.BracketView.render(State.bracket, State.champion, State.currentRound);
     }
@@ -389,6 +600,7 @@
    * ============================================================ */
   function switchView(view) {
     // 'battle' | 'transition' | 'champion' | 'bracket-view'
+    if (view !== 'battle') stopPlay();
     var map = {
       'battle': els.viewBattle,
       'transition': els.viewTransition,
@@ -422,7 +634,6 @@
    * ============================================================ */
   function saveState() {
     try {
-      // bracket 里存了完整歌曲对象，但为减小体积只存 id + 关键字段
       var slimBracket = State.bracket.map(function (m) {
         return {
           round: m.round,
@@ -434,10 +645,15 @@
           completed: m.completed
         };
       });
+      // 保存当前轮 pairings（随机配对需要持久化顺序）
+      var slimPairings = State.pairings.map(function (p) {
+        return [p[0] ? p[0].id : null, p[1] ? p[1].id : null];
+      });
       var data = {
         currentRound: State.currentRound,
         currentMatch: State.currentMatch,
         bracket: slimBracket,
+        pairings: slimPairings,
         championId: State.champion ? State.champion.id : null,
         seeds: State.seeds
       };
@@ -459,7 +675,7 @@
       State.currentMatch = data.currentMatch;
       State.champion = data.championId ? findSong(data.championId) : null;
 
-      // 重建 bracket（恢复完整歌曲对象）
+      // 重建 bracket
       State.bracket = (data.bracket || []).map(function (m) {
         return {
           round: m.round,
@@ -472,14 +688,19 @@
         };
       });
 
-      // 重建当前轮 pairings
-      if (State.champion) {
-        State.pairings = [];
-      } else if (State.bracket.length === 0) {
-        initFirstRound();
+      // 重建 pairings
+      if (data.pairings && data.pairings.length > 0) {
+        State.pairings = data.pairings.map(function (p) {
+          return [p[0] ? findSong(p[0]) : null, p[1] ? findSong(p[1]) : null];
+        });
       } else {
-        // 根据当前轮已记录的对局重建晋级者，再生成 pairings
-        rebuildPairingsForCurrentRound();
+        State.pairings = [];
+      }
+
+      // 如果没有 pairings 且还没开始，初始化
+      if (State.pairings.length === 0 && !State.champion && State.bracket.length === 0) {
+        initFirstRound();
+        saveState();
       }
       return true;
     } catch (e) {
@@ -487,25 +708,16 @@
     }
   }
 
-  // 根据当前轮已完成的场次重建 pairings（处理恢复进度时）
+  // 根据当前轮已完成的场次重建 pairings（备用方案）
   function rebuildPairingsForCurrentRound() {
     var round = State.currentRound;
-    // 收集本轮已完成对局的胜者（按场次顺序）
-    var winnersInOrder = [];
-    State.bracket.forEach(function (m) {
-      if (m.round === round && m.completed) {
-        winnersInOrder.push(findSong(m.winnerId));
-      }
-    });
-    // 本轮全部晋级者（用于生成完整配对结构）
-    var allAdvancing;
+    // 收集已完成对局和未完成的晋级者
+    var allAdvancing = [];
     if (round === 1) {
       allAdvancing = window.TS_SONGS.slice().sort(function (a, b) {
         return (State.seeds[a.id] || 999) - (State.seeds[b.id] || 999);
       });
     } else {
-      // 上一轮晋级者
-      allAdvancing = [];
       State.bracket.forEach(function (m) {
         if (m.round === round - 1 && m.completed) {
           allAdvancing.push(findSong(m.winnerId));
@@ -515,7 +727,7 @@
         return (State.seeds[a.id] || 999) - (State.seeds[b.id] || 999);
       });
     }
-    State.pairings = seedPair(allAdvancing);
+    State.pairings = makePairs(allAdvancing);
   }
 
   /* ============================================================

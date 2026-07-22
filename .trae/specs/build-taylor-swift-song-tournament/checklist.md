@@ -1,0 +1,28 @@
+# Checklist
+
+- [x] 128 首歌曲数据集完整：恰好 128 条，id 唯一，字段无空值
+- [x] 覆盖全部 12 张录音室专辑（Debut / Fearless / Speak Now / Red / 1989 / reputation / Lover / folklore / evermore / Midnights / TTPD / The Life of a Showgirl）
+- [x] 覆盖全部 4 张已发行重录专辑（Fearless TV / Red TV / Speak Now TV / 1989 TV）的 From the Vault 曲目
+- [x] The Life of a Showgirl 全部 12 首曲目均纳入：The Fate of Ophelia / Elizabeth Taylor / Opalite / Father Figure / Eldest Daughter / Ruin the Friendship / Actually Romantic / Wish List / Wood / Cancelled! / Honey / The Life of a Showgirl (feat. Sabrina Carpenter)
+- [x] 同一歌曲不重复收录（原版与 TV 二选一，优先原版；TV 以 isTV 标记）
+- [x] 每首歌曲含字段：id / title / album / year / duration / trackNumber / popularityScore / era / coverColor / isVault / isTV
+- [x] 对战流程完整：128 → 64 → 32 → 16 → 8 → 4 → 2 → 1，共 7 轮 127 场，无错位或跳场
+- [x] 首轮配对采用 seed 法（1v128、2v127…），保证热度高的歌曲不早期相遇
+- [x] 单场对战：两张卡片同时展示，点击后晋级并自动推进下一场
+- [x] 进度条正确更新（当前轮进度 + 总体 127 场进度）
+- [x] 轮次过渡提示正确显示
+- [x] 冠军揭晓页含 confetti / 光效庆祝动画，含"查看对战表"与"重新开始"按钮
+- [x] 对战过程表格列出全部 127 场，含轮次/场次编号/歌曲A/歌曲B/用户选择/结果状态
+- [x] 表格按轮次分组折叠，冠军行高亮置顶，未进行场次显示"待定"
+- [x] 表格在手机端可读（横向滚动或卡片式）
+- [x] localStorage 保存进度，刷新后断点续选正常
+- [x] "重新开始"清除数据并重置首轮配对
+- [x] 移动端 375px 宽度下完整可用，触控目标 ≥44×44px，无横向滚动，字号 ≥14px
+- [x] 桌面端 ≥1024px 两卡片左右并排，居中且不超 1200px
+- [x] 视觉风格独特有记忆点：使用特色字体对（display + body），避免 Inter/Roboto/Space Grotesk
+- [x] 配色避免俗套紫色渐变白底，按 album era 切换主题色
+- [x] 背景含层次质感（噪点 + 渐变 mesh + 几何装饰），非纯色
+- [x] 装饰资源通过 byted-seedream-image-generate 与 algorithmic-art 生成
+- [x] 通过 trae-remote-official:coderabbit:code-review 代码审查，无 critical/major 遗留
+- [x] 通过 web-design-guidelines 设计合规审查，可访问性/对比度/响应式问题已修复
+- [x] 通过 trae-remote-official:frontend-design:frontend-design 美学最终把关
