@@ -344,65 +344,122 @@
         return;
       }
 
-      // 构建搜索词：歌名 + Taylor Swift
       var term = encodeURIComponent(song.title + ' Taylor Swift');
       var url = 'https://itunes.apple.com/search?term=' + term + '&media=music&limit=5';
 
-      // 用 JSONP 方式请求（避免 CORS 问题）
+      // 优先用 fetch + CORS（iTunes API 支持 CORS）
+      // JSONP 在 iOS 上可能有兼容性问题
+      if (window.fetch) {
+        fetchWithTimeout(url, 15000)
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            var previewUrl = pickBestPreview(data, song);
+            if (previewUrl) {
+              previewCache[song.id] = previewUrl;
+              savePreviewCache();
+              resolve(previewUrl);
+            } else {
+              // fetch 成功但没找到匹配，尝试 JSONP fallback
+              fetchFromItunesJsonp(song, url).then(resolve, reject);
+            }
+          })
+          .catch(function () {
+            // fetch 失败（可能是 CORS 或网络），回退到 JSONP
+            fetchFromItunesJsonp(song, url).then(resolve, reject);
+          });
+      } else {
+        // 不支持 fetch，直接用 JSONP
+        fetchFromItunesJsonp(song, url).then(resolve, reject);
+      }
+    });
+  }
+
+  // fetch 带超时
+  function fetchWithTimeout(url, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var controller = null;
+      if (window.AbortController) {
+        controller = new AbortController();
+      }
+      var opts = controller ? { signal: controller.signal } : {};
+      var timer = setTimeout(function () {
+        if (controller) controller.abort();
+        reject(new Error('Timeout'));
+      }, timeoutMs);
+      fetch(url, opts).then(function (res) {
+        clearTimeout(timer);
+        resolve(res);
+      }).catch(function (err) {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  // 从 iTunes 返回数据中挑选最匹配的预览 URL
+  function pickBestPreview(data, song) {
+    if (!data || !data.results || data.results.length === 0) return null;
+    var best = null;
+    var lowerTitle = song.title.toLowerCase();
+    for (var i = 0; i < data.results.length; i++) {
+      var r = data.results[i];
+      if (r.previewUrl && r.artistName && r.artistName.indexOf('Taylor') >= 0) {
+        var match = r.trackName ? r.trackName.toLowerCase() : '';
+        if (match === lowerTitle || match.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(match) >= 0) {
+          best = r.previewUrl;
+          break;
+        }
+        if (!best) best = r.previewUrl;
+      }
+    }
+    return best;
+  }
+
+  // JSONP 方式请求 iTunes（作为 fetch 的 fallback）
+  function fetchFromItunesJsonp(song, url) {
+    return new Promise(function (resolve, reject) {
+      if (previewCache[song.id]) {
+        resolve(previewCache[song.id]);
+        return;
+      }
       var callbackName = 'ts_itunes_cb_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
       var script = document.createElement('script');
+      var settled = false;
 
       window[callbackName] = function (data) {
-        try {
-          delete window[callbackName];
-          script.remove();
-
-          if (data && data.results && data.results.length > 0) {
-            // 找最匹配的结果
-            var best = null;
-            var lowerTitle = song.title.toLowerCase();
-            for (var i = 0; i < data.results.length; i++) {
-              var r = data.results[i];
-              if (r.previewUrl && r.artistName && r.artistName.indexOf('Taylor') >= 0) {
-                var match = r.trackName ? r.trackName.toLowerCase() : '';
-                if (match === lowerTitle || match.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(match) >= 0) {
-                  best = r.previewUrl;
-                  break;
-                }
-                if (!best) best = r.previewUrl;
-              }
-            }
-            if (best) {
-              previewCache[song.id] = best;
-              savePreviewCache();
-              resolve(best);
-            } else {
-              reject('No matching track found');
-            }
-          } else {
-            reject('No results');
-          }
-        } catch (e) {
-          reject(e.message);
+        if (settled) return;
+        settled = true;
+        try { delete window[callbackName]; } catch (e) {}
+        try { script.remove(); } catch (e) {}
+        var previewUrl = pickBestPreview(data, song);
+        if (previewUrl) {
+          previewCache[song.id] = previewUrl;
+          savePreviewCache();
+          resolve(previewUrl);
+        } else {
+          reject('No matching track found');
         }
       };
 
       script.src = url + '&callback=' + callbackName;
       script.onerror = function () {
+        if (settled) return;
+        settled = true;
         try { delete window[callbackName]; } catch (e) {}
-        script.remove();
+        try { script.remove(); } catch (e) {}
         reject('Network error');
       };
       document.head.appendChild(script);
 
-      // 超时 8 秒
+      // 超时 15 秒（iOS 网络可能较慢）
       setTimeout(function () {
-        if (window[callbackName]) {
+        if (!settled && window[callbackName]) {
+          settled = true;
           try { delete window[callbackName]; } catch (e) {}
           try { script.remove(); } catch (e) {}
           reject('Timeout');
         }
-      }, 8000);
+      }, 15000);
     });
   }
 
@@ -416,12 +473,17 @@
     playBtn.classList.add('is-playing');
     playBtn.innerHTML = '<svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite;" aria-hidden="true"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>';
 
+    // iOS 解锁 AudioContext（为 fallback 做准备，必须在用户手势内）
+    unlockAudioContext();
+
     fetchPreviewUrl(song).then(function (previewUrl) {
       if (currentSongId !== song.id) return; // 用户已切换
 
       var audio = new Audio();
       audio.preload = 'auto';
-      audio.crossOrigin = 'anonymous';
+      // 注意：不要设置 crossOrigin='anonymous'
+      // iTunes 预览服务器对 CORS 头返回不一致，iOS Safari/Chrome 会静默失败
+      // 我们只是播放音频，不需要用 Web Audio API 分析，所以不需要 CORS
 
       // 播放时长：null = 完整预览；数字 = 截取指定秒数
       var snippetDuration = AUDIO_CONFIG.duration; // null 或 秒数
@@ -440,8 +502,10 @@
           if (currentPlayBtn && currentSongId === song.id) {
             currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
           }
-        }).catch(function () {
+        }).catch(function (playErr) {
+          // iOS 自动播放策略阻止：回退到生成式音乐
           stopPlay();
+          playGeneratedSnippet(song, playBtn);
         });
 
         // 如果配置了固定时长，到时自动停止；否则播放到自然结束
@@ -458,7 +522,9 @@
       });
 
       audio.addEventListener('error', function () {
+        // 音频加载失败：回退到生成式音乐
         stopPlay();
+        playGeneratedSnippet(song, playBtn);
       });
 
       audio.src = previewUrl;
@@ -469,6 +535,30 @@
       stopPlay();
       playGeneratedSnippet(song, playBtn);
     });
+  }
+
+  // iOS 需要在用户手势内解锁 AudioContext，否则 fallback 音乐也无法播放
+  var unlockedAudioCtx = null;
+  function unlockAudioContext() {
+    try {
+      if (unlockedAudioCtx) {
+        if (unlockedAudioCtx.state === 'suspended') {
+          unlockedAudioCtx.resume();
+        }
+        return;
+      }
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      unlockedAudioCtx = new Ctx();
+      // 创建一个空 oscillator 来解锁
+      var osc = unlockedAudioCtx.createOscillator();
+      var gain = unlockedAudioCtx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(unlockedAudioCtx.destination);
+      osc.start();
+      osc.stop(unlockedAudioCtx.currentTime + 0.001);
+    } catch (e) {}
   }
 
   // 回退：Web Audio 生成式音乐片段（当 iTunes 不可用时）
