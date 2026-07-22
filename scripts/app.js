@@ -241,9 +241,7 @@
     }
     var audio = currentAudio;
     var btn = currentPlayBtn;
-    // 先清空状态引用：清理 audio.src 时可能触发 'error' 事件，
-    // 必须在此之前置空，使 playSongSnippet 内的 guard
-    // (currentSongId !== song.id) 能拦截到销毁产生的 error，避免误触发回退音乐
+    // 先清空状态引用，标记为已销毁
     currentAudio = null;
     currentPlayBtn = null;
     currentSongId = null;
@@ -251,11 +249,14 @@
       btn.classList.remove('is-playing');
       btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
     }
-    if (audio) {
+    if (audio && typeof audio.pause === 'function') {
       try {
+        // 标记为已销毁，所有异步回调首行检查此标记直接返回
+        audio._tsDestroyed = true;
         audio.pause();
-        audio.src = '';
-        audio.load();
+        // 注意：不要做 audio.src='' + audio.load()
+        // 这会在某些浏览器触发 'error' 事件，即使有 guard 也容易出时序问题
+        // 直接 pause + 放弃引用即可，旧 audio 对象会被 GC 回收
       } catch (e) {}
     }
   }
@@ -495,6 +496,7 @@
       var startOffset = AUDIO_CONFIG.startOffset || 0;
 
       audio.addEventListener('canplaythrough', function onReady() {
+        if (audio._tsDestroyed) return;
         audio.removeEventListener('canplaythrough', onReady);
         if (currentSongId !== song.id) return;
 
@@ -504,10 +506,12 @@
         }
         audio.volume = 0.85;
         audio.play().then(function () {
+          if (audio._tsDestroyed) return;
           if (currentPlayBtn && currentSongId === song.id) {
             currentPlayBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
           }
         }).catch(function (playErr) {
+          if (audio._tsDestroyed) return;
           // 已停止或切换时（如 play() 因中断以 AbortError reject），不回退
           if (currentSongId !== song.id) return;
           // iOS 自动播放策略阻止：回退到生成式音乐
@@ -523,12 +527,14 @@
         } else {
           // 完整预览模式：播放结束时自动停止
           audio.addEventListener('ended', function () {
+            if (audio._tsDestroyed) return;
             stopPlay();
           });
         }
       });
 
       audio.addEventListener('error', function () {
+        if (audio._tsDestroyed) return;
         // 已停止或切换到其他歌曲时，忽略销毁 src 触发的 error 事件
         if (currentSongId !== song.id) return;
         // 音频加载失败：回退到生成式音乐
